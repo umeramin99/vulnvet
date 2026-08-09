@@ -39,6 +39,10 @@ int handle_request(struct request *req, const char *buf, size_t len)
 UTIL_C = """\
 #include <stdlib.h>
 
+/* Build with --max-count=5 --fixed-strings for the bounded variant.
+   This literal exists so tests can search for an option-shaped string
+   that is genuinely present in the tree. */
+
 void *checked_alloc(size_t nmemb, size_t size)
 {
     void *ptr = calloc(nmemb, size);

@@ -30,7 +30,11 @@ SOURCE_EXTS = (
 
 FILE_RE = re.compile(
     r"(?<![\w/@.-])"
-    r"((?:[A-Za-z0-9_.+-]+/)*[A-Za-z0-9_.+-]+\.(?:%s))" % SOURCE_EXTS
+    # A path may not begin with '-': such a string is a command-line
+    # option, not a file a report is citing, and it must never reach the
+    # git layer as a pathspec.
+    r"((?:[A-Za-z0-9_.+][A-Za-z0-9_.+-]*/)*[A-Za-z0-9_.+][A-Za-z0-9_.+-]*"
+    r"\.(?:%s))" % SOURCE_EXTS
     + r"(?::(\d+))?(?!\.?\w)"
 )
 
