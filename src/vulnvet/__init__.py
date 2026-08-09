@@ -22,7 +22,8 @@ def vet(report_text: str, repo_path: str = ".", rev: Optional[str] = None):
     from .gitrepo import Repo
     from .verify import build_dossier
 
-    claims, notes = extract_claims(report_text)
+    stats: dict = {}
+    claims, notes = extract_claims(report_text, stats)
     repo = Repo(repo_path)
     return build_dossier(
         report_path="<api>",
@@ -30,4 +31,5 @@ def vet(report_text: str, repo_path: str = ".", rev: Optional[str] = None):
         rev_input=rev,
         claims=claims,
         notes=notes,
+        dropped=stats.get("dropped"),
     )

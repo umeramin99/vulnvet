@@ -27,20 +27,33 @@ _DOC_BASENAMES = ("changelog", "changes", "news", "history", "authors", "thanks"
 #: this, a project's real history.c or changes.c would be classified as
 #: documentation and its symbols reported as never appearing in code.
 _SOURCE_EXTS = (
-    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".py", ".rs", ".go", ".js",
-    ".ts", ".java", ".rb", ".php", ".swift", ".kt", ".cs", ".m", ".mm",
-    ".pl", ".sh", ".lua", ".zig", ".scala", ".ex", ".erl", ".hs", ".dart",
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".c++", ".hpp", ".hh", ".hxx",
+    ".inc", ".def", ".tcc", ".ipp", ".py", ".pyx", ".pyi", ".rs", ".go",
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".java", ".rb", ".php",
+    ".swift", ".kt", ".kts", ".cs", ".fs", ".m", ".mm", ".pl", ".pm",
+    ".sh", ".bash", ".zsh", ".ps1", ".lua", ".zig", ".scala", ".ex",
+    ".exs", ".erl", ".hrl", ".hs", ".dart", ".jl", ".nim", ".r", ".sql",
+    ".proto", ".asm", ".s", ".vue", ".svelte", ".clj", ".cljs", ".elm",
+    ".ml", ".mli", ".f90", ".f", ".for", ".pas", ".d", ".v", ".sv",
 )
 
 
+def _is_source_path(path: str) -> bool:
+    """Does a hit here mean the symbol is in code the project ships?
+
+    Only a recognised source extension counts. Projects keep large
+    amounts of extension-less prose in the tree - curl ships RELEASE-NOTES
+    and docs/libcurl/symbols-in-versions, an exhaustive list of every
+    symbol it has ever had, including deleted ones. Treating those as
+    source let removed functions grade VERIFIED and get reported as
+    "defined at RELEASE-NOTES:123".
+    """
+    return path.lower().endswith(_SOURCE_EXTS)
+
+
 def _is_doc_path(path: str) -> bool:
-    lower = path.lower()
-    if lower.endswith(_SOURCE_EXTS):
-        return False
-    if lower.endswith(_DOC_EXTS):
-        return True
-    base = lower.rsplit("/", 1)[-1]
-    return any(base.startswith(b) for b in _DOC_BASENAMES)
+    """The complement: anything that is not source cannot corroborate."""
+    return not _is_source_path(path)
 
 
 def _only_in_docs(hits: List[Tuple[str, int, str]]) -> bool:
@@ -123,20 +136,55 @@ class Verifier:
     # ------------------------------------------------------------- helpers
 
     def _resolve_path(self, path: str) -> Optional[str]:
-        """Exact path in tree, or unique suffix match (handles absolute
-        build paths like /src/project/lib/http.c)."""
+        """The tree path a citation refers to, or None.
+
+        A stack frame carries the absolute path the machine compiled
+        under, so ``/src/curl/lib/http.c`` has to resolve to
+        ``lib/http.c``. That tolerance cannot extend to arbitrary
+        prefixes: ``vendor/quicfork/patched/lib/http2.c`` also ends in a
+        real path, and accepting it made the dossier corroborate - and
+        quote lines from - a path the repository has never contained.
+        A discarded prefix must therefore look like a build location:
+        absolute, or a learned build root.
+        """
         if path in self._tree_set:
             return path
         stripped = path.lstrip("/")
         if stripped in self._tree_set:
             return stripped
-        suffix_hits = [
+
+        # The report gave less path than the tree has ("http.c" for
+        # "src/http.c"). There is no prefix to fabricate in this
+        # direction, so a unique match is safe.
+        shorter = [p for p in self._tree if p.endswith("/" + stripped)]
+        if len(shorter) == 1:
+            return shorter[0]
+
+        # The report gave more path than the tree has. This is the
+        # direction a build root explains and an invention abuses.
+        longer = [
             p for p in self._tree
-            if p.endswith("/" + stripped) or (stripped.endswith("/" + p))
+            if p != stripped and stripped.endswith("/" + p)
         ]
-        if len(suffix_hits) == 1:
-            return suffix_hits[0]
+        if len(longer) != 1:
+            return None
+        candidate = longer[0]
+        prefix = stripped[: -len(candidate)]
+        if self._is_build_prefix(path, prefix):
+            return candidate
         return None
+
+    def _is_build_prefix(self, original: str, prefix: str) -> bool:
+        """Is the discarded prefix plausibly where this was compiled?"""
+        if not prefix:
+            return True
+        normalized = original.replace("\\", "/")
+        if any(normalized.startswith(root) for root in self.build_roots):
+            return True
+        # An absolute path is a build location by construction; a
+        # relative one is the reporter describing a tree layout, and a
+        # tree layout that is not ours is not ours.
+        return normalized.startswith("/")
 
     def _suggest_path(self, path: str) -> Optional[Tuple[str, bool]]:
         """(suggested_path, exact_basename_match) or None.
@@ -312,8 +360,10 @@ class Verifier:
                 return Finding(
                     claim,
                     Verdict.MISMATCH,
-                    f"'{name}' appears only in documentation/text files at "
-                    f"{self.rev} ({sample}), never in source code",
+                    f"'{name}' appears at {self.rev} only outside source "
+                    f"code ({sample}) - in documentation, release notes or "
+                    f"other non-source files, which is where a removed "
+                    f"function still gets mentioned",
                 )
             defn = self._definition_hit(name, hits)
             more = "+" if len(hits) >= 50 else ""
@@ -548,14 +598,38 @@ class Verifier:
                 return True
         return normalized.rsplit("/", 1)[-1] in self._basenames
 
-    @staticmethod
-    def _is_external_path(path: str) -> bool:
-        markers = (
-            "/usr/", "/lib/x86_64", "libc", "glibc", "/sysdeps/",
-            "compiler-rt", "libsanitizer", "asan_", "sanitizer_common",
-            "interception", "/glibc-", "musl", "crtstuff",
-        )
-        return any(m in path for m in markers)
+    #: Path components that mark a frame as belonging to the system or
+    #: to a sanitizer runtime rather than to any project source.
+    _EXTERNAL_COMPONENTS = frozenset(
+        {
+            "usr", "sysdeps", "compiler-rt", "libsanitizer",
+            "sanitizer_common", "interception", "crtstuff", "musl",
+            "libc", "glibc", "libstdc++", "libc++",
+        }
+    )
+
+    @classmethod
+    def _is_external_path(cls, path: str) -> bool:
+        """Is this frame in libc or a sanitizer runtime?
+
+        Matched on whole path components. A substring test called
+        /build/libcurl/... external because "libc" is inside "libcurl",
+        which dismissed every fabricated frame in a curl report before it
+        could be graded.
+        """
+        for part in path.replace("\\", "/").split("/"):
+            if not part:
+                continue
+            lowered = part.lower()
+            if lowered in cls._EXTERNAL_COMPONENTS:
+                return True
+            # versioned spellings: glibc-2.36, musl-1.2.4
+            base = lowered.split("-", 1)[0]
+            if base in ("glibc", "musl", "libc") and base != lowered:
+                return True
+            if lowered.startswith(("asan_", "tsan_", "msan_", "ubsan_")):
+                return True
+        return "/lib/x86_64" in path
 
     # --------------------------------------------------------- QUOTED_CODE
 
@@ -563,6 +637,13 @@ class Verifier:
         lines: List[str] = claim.extra.get("lines", [])
         hint = claim.extra.get("hint_path")
         origin = claim.extra.get("origin", "quote")
+        if origin == "ambiguous":
+            return Finding(
+                claim, Verdict.UNCHECKABLE,
+                "the surrounding text describes this block both as a quote "
+                "from the codebase and as the reporter's own code, so it "
+                "was not graded either way - read it yourself",
+            )
         if len(lines) < 3:
             return Finding(
                 claim, Verdict.UNCHECKABLE,
@@ -571,6 +652,7 @@ class Verifier:
             )
         found = 0
         example_hit = None
+        missing: List[str] = []
         for needle in lines:
             hits = self.repo.grep_fixed_line(
                 self.sha, needle, excludes=self.excludes
@@ -579,17 +661,37 @@ class Verifier:
                 found += 1
                 if example_hit is None:
                     example_hit = hits[0]
+            else:
+                missing.append(needle)
         ratio = found / len(lines)
+        # Name what did not match. A ratio alone hides the one inserted
+        # line in an otherwise genuine excerpt, which is precisely where
+        # a fabricated vulnerability lives.
+        missing_note = ""
+        if missing:
+            shown = "; ".join(m[:70] for m in missing[:3])
+            more = f" (+{len(missing) - 3} more)" if len(missing) > 3 else ""
+            missing_note = f" Not found in the tree: {shown}{more}."
         where = (
             f" (e.g. {example_hit[0]}:{example_hit[1]})" if example_hit else ""
         )
         what = "patch context" if origin == "patch" else "quoted code"
         hint_note = f" [report attributes it to {hint}]" if hint else ""
-        if ratio >= 0.8:
+        if found == len(lines):
             return Finding(
                 claim, Verdict.VERIFIED,
-                f"{found}/{len(lines)} sampled lines of {what} found "
-                f"verbatim at {self.rev}{where}{hint_note}",
+                f"all {found} sampled lines of {what} found verbatim at "
+                f"{self.rev}{where}{hint_note}",
+            )
+        # Anything short of every line is a mismatch that names the gap.
+        # A tolerance here is a free line of fabricated code inside an
+        # otherwise real excerpt.
+        if ratio >= 0.8:
+            return Finding(
+                claim,
+                Verdict.MISMATCH,
+                f"{found}/{len(lines)} sampled lines of {what} found at "
+                f"{self.rev}{where}{hint_note}.{missing_note}",
             )
         if found == 0:
             return Finding(
@@ -604,7 +706,7 @@ class Verifier:
             Verdict.MISMATCH,
             f"only {found}/{len(lines)} sampled lines of {what} found at "
             f"{self.rev}{where}{hint_note} - possibly a different version, "
-            "or partially invented",
+            f"or partially invented.{missing_note}",
         )
 
     # -------------------------------------------------------------- VERSION
@@ -783,6 +885,7 @@ def build_dossier(
     rev_input: Optional[str],
     claims: List[Claim],
     notes: List[str],
+    dropped: Optional[dict] = None,
 ) -> Dossier:
     """Resolve the revision, grade every claim, assemble the dossier."""
     run_notes = list(notes)
@@ -832,4 +935,5 @@ def build_dossier(
         rev_sha=sha,
         findings=findings,
         notes=run_notes,
+        dropped=dict(dropped or {}),
     )

@@ -128,7 +128,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"vulnvet: {exc}", file=sys.stderr)
         return 2
 
-    claims, notes = extract_claims(text)
+    stats: dict = {}
+    claims, notes = extract_claims(text, stats)
 
     try:
         dossier = build_dossier(
@@ -137,6 +138,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             rev_input=args.rev,
             claims=claims,
             notes=notes,
+            dropped=stats.get("dropped"),
         )
     except GitError as exc:
         print(f"vulnvet: {exc}", file=sys.stderr)
