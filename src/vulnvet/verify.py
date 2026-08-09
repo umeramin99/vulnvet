@@ -793,6 +793,12 @@ def build_dossier(
             "version, re-run with --rev <version> for a fairer check."
         )
 
+    if getattr(repo, "subdir", ""):
+        run_notes.append(
+            f"--repo pointed at the subdirectory {repo.subdir}; claims were "
+            f"checked against the whole repository"
+        )
+
     excludes = _self_exclusions(report_path, repo)
     if excludes:
         run_notes.append(
