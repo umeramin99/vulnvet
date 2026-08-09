@@ -84,7 +84,7 @@ def test_markdown_dossier_written_to_file(fixture_repo, tmp_path):
     rc = main([str_report(tmp_path, SLOP_REPORT), "--repo", fixture_repo,
                "--rev", "v1.0.0", "-o", str(out_file)])
     assert rc == 1
-    content = out_file.read_text()
+    content = out_file.read_text(encoding="utf-8")
     assert "vulnvet triage dossier" in content
     assert "❌ NOT FOUND" in content
 
@@ -111,7 +111,7 @@ def test_bad_rev_is_usage_error(fixture_repo, tmp_path, capsys):
 
 def test_empty_report_is_usage_error(fixture_repo, tmp_path, capsys):
     empty = tmp_path / "empty.md"
-    empty.write_text("   \n")
+    empty.write_text("   \n", encoding="utf-8")
     rc = main([str(empty), "--repo", fixture_repo])
     capsys.readouterr()
     assert rc == 2
@@ -128,7 +128,7 @@ def test_stdin_report(fixture_repo, monkeypatch, capsys):
 
 def str_report(tmp_path, content):
     report = tmp_path / "report.md"
-    report.write_text(content)
+    report.write_text(content, encoding="utf-8")
     return str(report)
 
 
@@ -141,3 +141,28 @@ def test_markdown_does_not_leak_local_paths(fixture_repo, tmp_path, capsys):
     assert fixture_repo not in out
     assert str(tmp_path) not in out
     assert "report.md" in out
+
+
+def test_dossier_survives_a_legacy_console_encoding(fixture_repo, tmp_path):
+    """A Windows console still defaults to a code page that cannot encode
+    the markdown dossier's emoji badges. Losing the whole dossier to a
+    UnicodeEncodeError is far worse than a substituted character."""
+    import os
+    import subprocess
+    import sys
+
+    report = str_report(tmp_path, SLOP_REPORT)
+    for encoding in ("cp1252", "ascii"):
+        proc = subprocess.run(
+            [sys.executable, "-m", "vulnvet", report, "--repo", fixture_repo,
+             "--rev", "v1.0.0", "--format", "markdown"],
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": encoding},
+        )
+        assert proc.returncode == 1, (
+            f"{encoding}: crashed instead of grading "
+            f"({proc.stderr.decode(errors='replace')[-200:]})"
+        )
+        out = proc.stdout.decode(encoding, errors="replace")
+        assert "vulnvet triage dossier" in out
+        assert "| verdict |" in out, f"{encoding}: lost the findings table"

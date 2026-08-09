@@ -70,15 +70,15 @@ def fixture_repo(tmp_path_factory):
     git(path, "config", "tag.gpgsign", "false")
 
     (path / "src").mkdir()
-    (path / "src" / "http.c").write_text(HTTP_C)
+    (path / "src" / "http.c").write_text(HTTP_C, encoding="utf-8")
     (path / "lib").mkdir()
-    (path / "lib" / "util.c").write_text(UTIL_C)
-    (path / "README.md").write_text("# demo project\n")
+    (path / "lib" / "util.c").write_text(UTIL_C, encoding="utf-8")
+    (path / "README.md").write_text("# demo project\n", encoding="utf-8")
     git(path, "add", ".")
     git(path, "commit", "-q", "-m", "initial import")
     git(path, "tag", "v1.0.0")
 
-    (path / "src" / "http.c").write_text(HTTP_C + "\n/* hardening pass */\n")
+    (path / "src" / "http.c").write_text(HTTP_C + "\n/* hardening pass */\n", encoding="utf-8")
     git(path, "add", ".")
     git(path, "commit", "-q", "-m", "fix header parsing bounds")
     git(path, "tag", "v1.1.0")
@@ -108,7 +108,7 @@ def submodule_repo(tmp_path_factory):
     git(dep, "config", "user.name", "Test")
     (dep / "src").mkdir()
     (dep / "src" / "parser.c").write_text(
-        "int dep_parse_header(char *b)\n{\n    return 0;\n}\n"
+        "int dep_parse_header(char *b)\n{\n    return 0;\n}\n", encoding="utf-8"
     )
     git(dep, "add", "-A")
     git(dep, "commit", "-q", "-m", "dep")
@@ -118,7 +118,7 @@ def submodule_repo(tmp_path_factory):
     git(main, "init", "-q")
     git(main, "config", "user.email", "test@example.invalid")
     git(main, "config", "user.name", "Test")
-    (main / "app.c").write_text("int main(void) { return 0; }\n")
+    (main / "app.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
     git(main, "add", "-A")
     git(main, "commit", "-q", "-m", "init")
     git(

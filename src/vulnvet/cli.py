@@ -97,6 +97,32 @@ def _read_report(path: str) -> str:
         return fh.read()
 
 
+def _write_stdout(text: str) -> None:
+    """Write the dossier to stdout without dying on a legacy console.
+
+    The markdown dossier uses emoji verdict badges, and a Windows console
+    still defaults to a code page that cannot encode them. Losing the
+    whole dossier to a UnicodeEncodeError is a far worse outcome than a
+    substituted character, so degrade instead of crashing.
+    """
+    try:
+        sys.stdout.write(text)
+        return
+    except UnicodeEncodeError:
+        pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        sys.stdout.flush()
+        buffer.write(text.encode(encoding, errors="replace"))
+        buffer.flush()
+    else:
+        sys.stdout.write(
+            text.encode(encoding, errors="replace").decode(encoding, "replace")
+        )
+
+
 def _pick_format(args: argparse.Namespace) -> str:
     if args.format:
         return args.format
@@ -166,7 +192,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
         print(f"vulnvet: dossier written to {args.output}", file=sys.stderr)
     else:
-        sys.stdout.write(rendered)
+        _write_stdout(rendered)
 
     if args.exit_zero:
         return 0
