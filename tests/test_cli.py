@@ -130,3 +130,14 @@ def str_report(tmp_path, content):
     report = tmp_path / "report.md"
     report.write_text(content)
     return str(report)
+
+
+def test_markdown_does_not_leak_local_paths(fixture_repo, tmp_path, capsys):
+    rc = main([str_report(tmp_path, SLOP_REPORT), "--repo", fixture_repo,
+               "--rev", "v1.0.0", "--format", "markdown"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    # the dossier is meant to be pasted publicly: no absolute paths
+    assert fixture_repo not in out
+    assert str(tmp_path) not in out
+    assert "report.md" in out

@@ -14,7 +14,7 @@ import re
 from typing import List, Optional, Tuple
 
 from .claims import Claim, ClaimType, Dossier, Finding, Verdict
-from .gitrepo import GitError, Repo, _normalize_version_text
+from .gitrepo import MAX_GREP_HITS, GitError, Repo, _normalize_version_text
 
 
 #: Files that are documentation, not source: a symbol living ONLY here
@@ -29,6 +29,18 @@ def _is_doc_path(path: str) -> bool:
         return True
     base = lower.rsplit("/", 1)[-1]
     return any(base.startswith(b) for b in _DOC_BASENAMES)
+
+
+def _only_in_docs(hits: List[Tuple[str, int, str]]) -> bool:
+    """True when every hit is a documentation file - and we can say so.
+
+    git grep results are capped, so a full cap's worth of doc hits does
+    not prove there is no source hit beyond the cap. Asserting otherwise
+    would be a factual claim the evidence does not support.
+    """
+    if not hits or len(hits) >= MAX_GREP_HITS:
+        return False
+    return all(_is_doc_path(h[0]) for h in hits)
 
 
 def _is_bare_document(path: str) -> bool:
@@ -248,7 +260,7 @@ class Verifier:
                     )
         if hits:
             sample = self._sample_hits(hits)
-            if all(_is_doc_path(h[0]) for h in hits):
+            if _only_in_docs(hits):
                 return Finding(
                     claim,
                     Verdict.MISMATCH,
@@ -337,9 +349,7 @@ class Verifier:
         )
         # A frame claims the function EXECUTED; appearing only in docs is
         # no better than not appearing at all.
-        docs_only = bool(func_hits_anywhere) and all(
-            _is_doc_path(h[0]) for h in func_hits_anywhere
-        )
+        docs_only = _only_in_docs(func_hits_anywhere)
 
         problems = []
         goods = []
@@ -383,8 +393,6 @@ class Verifier:
         evidence = "; ".join(goods + problems)
         if not problems:
             return Finding(claim, Verdict.VERIFIED, evidence)
-        if not func_hits_anywhere and (not path or not resolved):
-            return Finding(claim, Verdict.NOT_FOUND, evidence)
         if not func_hits_anywhere:
             return Finding(claim, Verdict.NOT_FOUND, evidence)
         return Finding(claim, Verdict.MISMATCH, evidence)

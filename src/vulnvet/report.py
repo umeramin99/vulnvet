@@ -79,6 +79,12 @@ def color_enabled(no_color_flag: bool, stream) -> bool:
     return hasattr(stream, "isatty") and stream.isatty()
 
 
+def _repo_label(path: str) -> str:
+    """The repository's name, without the surrounding filesystem path."""
+    name = os.path.basename(os.path.abspath(path))
+    return name or path
+
+
 def _grouped(dossier: Dossier) -> List[tuple]:
     groups = []
     for ctype in _ORDER:
@@ -173,10 +179,13 @@ def render_markdown(dossier: Dossier) -> str:
 
     add("## vulnvet triage dossier")
     add("")
-    add(f"**Report:** `{dossier.report_path}`  ")
+    add(f"**Report:** `{os.path.basename(dossier.report_path)}`  ")
+    # The markdown dossier is meant to be pasted into a public ticket, so
+    # it names the repository, not the maintainer's directory layout. The
+    # revision is what makes the result reproducible anyway.
     add(
-        f"**Checked against:** `{dossier.repo_path}` at `{dossier.rev}` "
-        f"(`{dossier.rev_sha[:12]}`)  "
+        f"**Checked against:** `{_repo_label(dossier.repo_path)}` at "
+        f"`{dossier.rev}` (`{dossier.rev_sha[:12]}`)  "
     )
     add(f"**Assessment: {a.grade}**")
     add("")
