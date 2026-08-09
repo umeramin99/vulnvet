@@ -23,8 +23,20 @@ _DOC_EXTS = (".md", ".markdown", ".rst", ".txt", ".adoc", ".textile", ".org")
 _DOC_BASENAMES = ("changelog", "changes", "news", "history", "authors", "thanks")
 
 
+#: Extensions that make a file source, whatever it is named. Without
+#: this, a project's real history.c or changes.c would be classified as
+#: documentation and its symbols reported as never appearing in code.
+_SOURCE_EXTS = (
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".py", ".rs", ".go", ".js",
+    ".ts", ".java", ".rb", ".php", ".swift", ".kt", ".cs", ".m", ".mm",
+    ".pl", ".sh", ".lua", ".zig", ".scala", ".ex", ".erl", ".hs", ".dart",
+)
+
+
 def _is_doc_path(path: str) -> bool:
     lower = path.lower()
+    if lower.endswith(_SOURCE_EXTS):
+        return False
     if lower.endswith(_DOC_EXTS):
         return True
     base = lower.rsplit("/", 1)[-1]
@@ -72,6 +84,7 @@ class Verifier:
         #: Build-time directory prefixes this project was compiled under,
         #: learned from stack frames that do resolve into the tree.
         self.build_roots: set = set()
+        self._uses_token_pasting: Optional[bool] = None
         self._tree = repo.tree_files(rev)
         self._tree_set = set(self._tree)
         self._basenames: dict = {}
@@ -148,6 +161,12 @@ class Verifier:
     def _verify_file(self, claim: Claim) -> Finding:
         path = claim.extra.get("path", claim.value)
         resolved = self._resolve_path(path)
+        if resolved is None and self._inside_submodule(path):
+            return Finding(
+                claim, Verdict.UNCHECKABLE,
+                f"path lies inside a submodule, whose contents are not "
+                f"stored in this repository at {self.rev}",
+            )
         if resolved is None and _is_bare_document(path):
             # "see report.md" / "attached notes.txt" names an attachment,
             # not a path in the tree. Grading it NOT FOUND would be an
@@ -236,7 +255,13 @@ class Verifier:
             # grading the symbol and the file separately would miss.
             resolved = self._resolve_path(attributed)
             if resolved:
-                in_file = [h for h in hits if h[0] == resolved]
+                # Ask git about that file directly. Filtering the general
+                # search would be wrong: its results are capped, so a
+                # common identifier's hits in the cited file can fall off
+                # the end and look like an absence.
+                in_file = self.repo.grep_word(
+                    self.sha, name, path=resolved, excludes=self.excludes
+                )
                 if not in_file:
                     defn = self._definition_hit(name, hits)
                     best = self._best_hit(hits)
@@ -299,11 +324,13 @@ class Verifier:
                 f"'{name}' does not appear at {self.rev}, but a "
                 f"different-cased spelling does ({self._sample_hits(ci_hits)})",
             )
-        return Finding(
-            claim,
-            Verdict.NOT_FOUND,
+        evidence = (
             f"identifier appears nowhere in the tree at {self.rev} "
-            f"(whole-word search across {len(self._tree)} files)",
+            f"(whole-word search across {len(self._tree)} files)"
+        )
+        return Finding(
+            claim, Verdict.NOT_FOUND, evidence,
+            suggestion=self._token_paste_caveat(),
         )
 
     @classmethod
@@ -331,6 +358,10 @@ class Verifier:
         for path, line, text in hits:
             if not defn_re.search(text):
                 continue
+            # "    foo_bar(x);" is a call, not a definition. Definitions
+            # continue onto a body rather than ending the statement.
+            if text.rstrip().endswith(";"):
+                continue
             # Prose in a docs file can look like a definition; only fall
             # back to one when no source file offers a better answer.
             if _is_doc_path(path):
@@ -357,6 +388,23 @@ class Verifier:
         func_hits_anywhere = func_hits_in_file or self.repo.grep_word(
             self.sha, func, excludes=self.excludes
         )
+        unqualified = None
+        if not func_hits_anywhere and "::" in func:
+            # Traces print qualified C++ names; the source declares the
+            # method unqualified inside its class.
+            candidate = func.rsplit("::", 1)[-1]
+            if len(candidate) >= 4:
+                hits = self.repo.grep_word(
+                    self.sha, candidate, excludes=self.excludes
+                )
+                if hits:
+                    unqualified = candidate
+                    func_hits_anywhere = hits
+                    if resolved:
+                        func_hits_in_file = self.repo.grep_word(
+                            self.sha, candidate, path=resolved,
+                            excludes=self.excludes,
+                        )
         # A frame claims the function EXECUTED; appearing only in docs is
         # no better than not appearing at all.
         docs_only = _only_in_docs(func_hits_anywhere)
@@ -408,7 +456,12 @@ class Verifier:
             )
         elif func_hits_anywhere:
             where = self._sample_hits(func_hits_anywhere)
-            goods.append(f"function '{func}' appears at {self.rev} ({where})")
+            shown = (
+                f"'{func}' (as unqualified '{unqualified}')"
+                if unqualified
+                else f"function '{func}'"
+            )
+            goods.append(f"{shown} appears at {self.rev} ({where})")
         else:
             problems.append(
                 f"function '{func}' appears nowhere in the tree at {self.rev}"
@@ -433,6 +486,15 @@ class Verifier:
         if not func_hits_anywhere:
             return Finding(claim, Verdict.NOT_FOUND, evidence)
         return Finding(claim, Verdict.MISMATCH, evidence)
+
+    def _inside_submodule(self, path: str) -> bool:
+        stripped = path.lstrip("/")
+        for sub in self.repo.submodule_paths(self.sha):
+            if stripped == sub or stripped.startswith(sub + "/"):
+                return True
+            if ("/" + stripped).endswith("/" + sub) or f"/{sub}/" in f"/{stripped}":
+                return True
+        return False
 
     def learn_build_roots(self, frame_paths) -> None:
         """Infer where this project was compiled, from frames that resolve.
@@ -545,6 +607,15 @@ class Verifier:
                 "try `git fetch --tags`)",
             )
 
+        product = claim.extra.get("product")
+        if product and not self._names_this_project(product):
+            return Finding(
+                claim, Verdict.UNCHECKABLE,
+                f"the report attributes this version to {product.strip()}, "
+                f"not to this project - vulnvet only knows this "
+                f"repository's release tags",
+            )
+
         role = claim.extra.get("role", "mentioned")
         if role == "range":
             start, end = claim.extra["start"], claim.extra["end"]
@@ -586,6 +657,32 @@ class Verifier:
                 f"nearest real versions: {near}" if near else None
             ),
         )
+
+    def _token_paste_caveat(self) -> Optional[str]:
+        """Warn when this project could construct the name at compile time.
+
+        A codebase using ## builds identifiers that never appear literally
+        in any file, so a grep miss is weaker evidence than it looks.
+        """
+        if self._uses_token_pasting is None:
+            self._uses_token_pasting = bool(
+                self.repo.grep_fixed_line(self.sha, "##", excludes=self.excludes)
+            )
+        if not self._uses_token_pasting:
+            return None
+        return (
+            "this project uses preprocessor token pasting (##), which can "
+            "build identifiers that never appear literally in the source - "
+            "check by hand before treating this as invented"
+        )
+
+    def _names_this_project(self, product: str) -> bool:
+        """Is this word the project itself rather than a third party?"""
+        import os
+
+        word = product.strip().strip(",;:").lower()
+        repo_name = os.path.basename(os.path.abspath(self.repo.path)).lower()
+        return word in (repo_name, repo_name.replace("-", ""), "project")
 
     @staticmethod
     def _version_known(version: str, tag_map) -> bool:

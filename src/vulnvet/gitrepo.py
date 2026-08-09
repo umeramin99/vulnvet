@@ -35,6 +35,8 @@ def _normalize_version_text(text: str) -> str:
     ``curl-8_9_0`` -> ``8.9.0``; ``v1.2.3`` -> ``1.2.3``; ``rel/2.1`` ->
     ``2.1``. Returns "" when there is nothing version-like inside.
     """
+    if not text:
+        return ""
     match = re.search(r"(\d+(?:[._-]\d+)+[a-z]?)$", text.strip())
     if not match:
         return ""
@@ -45,6 +47,7 @@ class Repo:
     def __init__(self, path: str):
         self.path = path
         self._tree_cache: Dict[str, List[str]] = {}
+        self._submodule_cache: Dict[str, List[str]] = {}
         self._tags: Optional[List[str]] = None
         try:
             out = self._run("rev-parse", "--is-inside-work-tree")
@@ -123,6 +126,26 @@ class Repo:
             self._tree_cache[rev] = [p for p in out.split("\0") if p]
         return self._tree_cache[rev]
 
+    def submodule_paths(self, rev: str) -> List[str]:
+        """Paths recorded as gitlinks (submodules) at *rev*.
+
+        Their contents are not in this repository, so a claim about a file
+        inside one is unverifiable here rather than false.
+        """
+        if rev in self._submodule_cache:
+            return self._submodule_cache[rev]
+        out = self._run("ls-tree", "-r", "-z", rev, check=False)
+        paths = []
+        for entry in out.split("\0"):
+            if not entry:
+                continue
+            meta, _, path = entry.partition("\t")
+            fields = meta.split()
+            if len(fields) >= 2 and fields[1] == "commit":
+                paths.append(path)
+        self._submodule_cache[rev] = paths
+        return paths
+
     def file_exists(self, rev: str, path: str) -> bool:
         return path in set(self.tree_files(rev))
 
@@ -138,21 +161,32 @@ class Repo:
             return None
         return proc.stdout
 
+    @staticmethod
+    def _split_lines(content: str) -> List[str]:
+        """Split the way a compiler and an editor number lines: on \\n only.
+
+        ``str.splitlines`` also breaks on \\v, \\f and U+2028, which would
+        make the line count disagree with the line the reporter is
+        looking at.
+        """
+        lines = content.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        return lines
+
     def line_count(self, rev: str, path: str) -> Optional[int]:
         content = self.read_file(rev, path)
         if content is None:
             return None
-        if content == "":
-            return 0
-        return content.count("\n") + (0 if content.endswith("\n") else 1)
+        return len(self._split_lines(content))
 
     def line_at(self, rev: str, path: str, line: int) -> Optional[str]:
         content = self.read_file(rev, path)
         if content is None:
             return None
-        lines = content.splitlines()
+        lines = self._split_lines(content)
         if 1 <= line <= len(lines):
-            return lines[line - 1]
+            return lines[line - 1].rstrip("\r")
         return None
 
     # ----------------------------------------------------------------- grep

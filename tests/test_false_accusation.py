@@ -174,3 +174,80 @@ def test_vague_report_is_not_an_accusation(fixture_repo):
     )
     assert dossier.findings == []
     assert dossier.assessment().grade == "NO CHECKABLE CLAIMS"
+
+
+def test_third_party_version_is_not_our_release_tag(fixture_repo):
+    """"Tested on Ubuntu 22.04" is an environment note. Checking it
+    against this project's tags would report it as a nonexistent
+    version."""
+    dossier = vet(
+        "Tested on Ubuntu 22.04 with OpenSSL 3.0.2, reproduced on 1.0.0.",
+        fixture_repo,
+    )
+    versions = verdicts(dossier, ClaimType.VERSION)
+    assert versions["22.04"] is Verdict.UNCHECKABLE
+    assert versions["1.0.0"] is Verdict.VERIFIED
+    assert dossier.count(Verdict.NOT_FOUND) == 0
+
+
+def test_copied_line_number_gutters_do_not_break_quote_matching(fixture_repo):
+    """Copying from a blob view brings the line numbers along. That is
+    not the reporter quoting code we do not have."""
+    text = """\
+The relevant code from src/http.c:
+
+```c
+  14  static int parse_header_line(struct request *req, const char *line, size_t len)
+  16      if (len > MAX_HEADER)
+  17          return -1;
+  18      req->header_count++;
+```
+"""
+    dossier = vet(text, fixture_repo)
+    quoted = [
+        f for f in dossier.findings if f.claim.type is ClaimType.QUOTED_CODE
+    ]
+    assert len(quoted) == 1
+    assert quoted[0].verdict is Verdict.VERIFIED
+
+
+def test_patch_that_creates_a_file_is_not_a_citation(fixture_repo):
+    """A suggested fix adding a new file is a proposal, not a claim that
+    the file already exists."""
+    text = """\
+Suggested fix - add a bounds helper:
+
+```diff
+--- /dev/null
++++ b/src/bounds.c
+@@ -0,0 +1,3 @@
++int bounded(size_t len) {
++    return len < MAX_HEADER;
++}
+```
+"""
+    dossier = vet(text, fixture_repo)
+    files = verdicts(dossier, ClaimType.FILE)
+    assert "src/bounds.c" not in files
+    assert dossier.count(Verdict.NOT_FOUND) == 0
+
+
+def test_source_file_named_history_c_is_not_documentation(fixture_repo):
+    from vulnvet.verify import _is_doc_path
+
+    assert not _is_doc_path("src/history.c")
+    assert not _is_doc_path("lib/changes.cpp")
+    assert _is_doc_path("CHANGELOG.md")
+    assert _is_doc_path("docs/NEWS")
+
+
+def test_one_bad_citation_among_many_good_ones_is_not_severe(fixture_repo):
+    """Escalation should need a pattern, not a single slip."""
+    text = """\
+`parse_header_line()` in `src/http.c` and `checked_alloc()` in
+`lib/util.c` are both involved; see src/http.c:15, src/http.c:18,
+lib/util.c:8 and README.md. One made-up name: `frobnicate_widget()`.
+"""
+    dossier = vet(text, fixture_repo)
+    assert len(dossier.strong_signals) == 1
+    assert dossier.assessment().grade == "PARTIAL GROUNDING"
