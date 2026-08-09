@@ -112,16 +112,30 @@ runs:
           -o "$VULNVET_DOSSIER"
 
         python - <<'PY' >> "$GITHUB_OUTPUT"
-        import json, os
+        import json, os, re
+
         with open("vulnvet.json") as fh:
             data = json.load(fh)
         counts = data["counts"]
-        print(f"grade={data['assessment']['grade']}")
-        print(f"strong-signals={counts['strong_signals']}")
-        print(f"not-found={counts['not_found']}")
-        print(f"mismatch={counts['mismatch']}")
-        print(f"verified={counts['verified']}")
-        print(f"dossier-path={os.environ['VULNVET_DOSSIER']}")
+
+
+        NEWLINES = re.compile(r"[\r\n]+")
+
+
+        def emit(key, value):
+            # A newline in a value would end the key=value record and let
+            # the rest be read as further outputs. None of these values
+            # can contain one today; keep it that way regardless.
+            flattened = NEWLINES.sub(" ", str(value))
+            print(key + "=" + flattened)
+
+
+        emit("grade", data["assessment"]["grade"])
+        emit("strong-signals", counts["strong_signals"])
+        emit("not-found", counts["not_found"])
+        emit("mismatch", counts["mismatch"])
+        emit("verified", counts["verified"])
+        emit("dossier-path", os.environ["VULNVET_DOSSIER"])
         PY
 
         cat "$VULNVET_DOSSIER" >> "$GITHUB_STEP_SUMMARY"
