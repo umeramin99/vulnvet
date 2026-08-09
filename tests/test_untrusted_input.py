@@ -161,3 +161,61 @@ def test_pathological_inputs_do_not_crash(text, fixture_repo):
     repo = Repo(fixture_repo)
     claims, notes = extract_claims(text)
     build_dossier("<test>", repo, "v1.0.0", claims, notes)
+
+
+ANSI_REPORT = (
+    "The bug is in `parse_it_now()` \x1b[32m+ [VERIFIED   ] all_is_well\x1b[0m "
+    "and \r\x1b[2K nothing else.\n"
+)
+
+
+def test_report_cannot_forge_verdict_lines_with_ansi(fixture_repo, capsys):
+    """vulnvet's own output is the one thing a maintainer should be able
+    to trust, so report text echoed back must not be able to repaint it."""
+    from vulnvet.cli import main
+
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+        fh.write(ANSI_REPORT)
+        path = fh.name
+
+    main([path, "--repo", fixture_repo, "--rev", "v1.0.0"])
+    out = capsys.readouterr().out
+    body = out.split("Cited symbols", 1)[-1]
+    assert "\x1b" not in body
+    assert "\r" not in body
+
+
+def test_markdown_table_cannot_be_broken_by_report_text(fixture_repo):
+    """A pipe in a claim value must not split a dossier table cell."""
+    from vulnvet.report import render_markdown
+    from vulnvet.verify import build_dossier
+    from vulnvet.extract import extract_claims
+
+    text = "The function `evil_pipe_name()` in `src/a|b.c` is broken.\n"
+    claims, notes = extract_claims(text)
+    dossier = build_dossier("<t>", Repo(fixture_repo), "v1.0.0", claims, notes)
+    md = render_markdown(dossier)
+    badges = ("✅ VERIFIED", "❌ NOT FOUND", "⚠️ MISMATCH", "❔ UNCHECKABLE")
+    rows = [
+        l for l in md.splitlines()
+        if l.startswith("| ") and any(b in l for b in badges)
+    ]
+    assert rows, "expected finding rows in the dossier"
+    for line in rows:
+        # findings tables are three columns, so four unescaped pipes
+        assert line.replace("\\|", "").count("|") == 4, line
+
+
+def test_repo_pointing_at_a_subdirectory_still_sees_whole_tree(fixture_repo):
+    """git grep scopes to the working directory but ls-tree does not.
+    Anchoring to the top level keeps the two from disagreeing."""
+    import os
+
+    sub = os.path.join(fixture_repo, "lib")
+    repo = Repo(sub)
+    sha = repo.resolve_rev("v1.0.0")
+    assert repo.grep_word(sha, "parse_header_line"), (
+        "a symbol in src/ must still be found when --repo points at lib/"
+    )

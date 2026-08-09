@@ -12,6 +12,7 @@ strings can never be parsed as git options.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from typing import Dict, List, Optional, Tuple
@@ -57,6 +58,19 @@ class Repo:
             ) from exc
         if out.strip() != "true":
             raise NotARepository(f"{path} is not inside a git work tree")
+        # git grep scopes to the current directory but ls-tree does not,
+        # so a --repo pointing into a subdirectory would make the two
+        # disagree. Anchor everything to the top level.
+        top = self._run("rev-parse", "--show-toplevel").strip()
+        if top:
+            self.subdir = os.path.relpath(
+                os.path.abspath(path), top
+            ).replace(os.sep, "/")
+            if self.subdir == ".":
+                self.subdir = ""
+            self.path = top
+        else:
+            self.subdir = ""
 
     # ------------------------------------------------------------------ util
 
@@ -196,7 +210,7 @@ class Repo:
         ignore_case: bool = False, excludes: Optional[List[str]] = None,
     ) -> List[Tuple[str, int, str]]:
         """Whole-word occurrences of *word* at *rev*: (path, line, text)."""
-        args = ["grep", "-n", "-w", "-I"]
+        args = ["grep", "-n", "-w", "-I", "-z"]
         if ignore_case:
             args.append("-i")
         args += ["--fixed-strings", "-e", word, rev]
@@ -210,7 +224,7 @@ class Repo:
         self, rev: str, needle: str, excludes: Optional[List[str]] = None,
     ) -> List[Tuple[str, int, str]]:
         """Exact fixed-string occurrences of *needle* anywhere at *rev*."""
-        args = ["grep", "-n", "-I", "--fixed-strings", "-e", needle, rev]
+        args = ["grep", "-n", "-I", "-z", "--fixed-strings", "-e", needle, rev]
         pathspecs = self._pathspecs(None, excludes)
         if pathspecs:
             args += ["--", *pathspecs]
@@ -230,19 +244,28 @@ class Repo:
 
     @staticmethod
     def _parse_grep(out: str, rev: str) -> List[Tuple[str, int, str]]:
+        """Parse ``git grep -z`` output: rev:path NUL line NUL? text.
+
+        With -z the path is NUL-terminated, so a path containing a colon
+        cannot be mistaken for a path:line boundary.
+        """
         hits: List[Tuple[str, int, str]] = []
         prefix = rev + ":"
-        for raw in out.splitlines():
-            if not raw.startswith(prefix):
+        for record in out.split("\n"):
+            if not record.startswith(prefix):
                 continue
-            rest = raw[len(prefix):]
-            # path:line:text - path may not contain ":" in sane repos; be
-            # defensive and split from the left on the first two colons
-            # that bracket a number.
-            m = re.match(r"(.*?):(\d+):(.*)$", rest)
-            if not m:
+            rest = record[len(prefix):]
+            path, sep, remainder = rest.partition("\0")
+            if not sep:
                 continue
-            hits.append((m.group(1), int(m.group(2)), m.group(3)))
+            number, sep2, text = remainder.partition("\0")
+            if not sep2:
+                number, sep2, text = remainder.partition(":")
+                if not sep2:
+                    continue
+            if not number.isdigit():
+                continue
+            hits.append((path, int(number), text))
             if len(hits) >= MAX_GREP_HITS:
                 break
         return hits

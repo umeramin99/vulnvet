@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from typing import List
 
@@ -79,6 +80,31 @@ def color_enabled(no_color_flag: bool, stream) -> bool:
     return hasattr(stream, "isatty") and stream.isatty()
 
 
+#: Control characters, including ESC. A report is attacker-controlled
+#: text, and vulnvet echoes pieces of it back (claim values, the line a
+#: claim came from). Without this, a reporter can embed ANSI sequences
+#: that repaint the terminal and forge verdict lines in vulnvet's own
+#: output - the one place a maintainer is entitled to trust.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def sanitize(text: str) -> str:
+    """Make report-derived text safe to print, in any format."""
+    if not text:
+        return ""
+    return _CONTROL_RE.sub("�", text.replace("\t", " "))
+
+
+def _md_cell(text: str) -> str:
+    """Sanitized and escaped for a markdown table cell."""
+    return (
+        sanitize(text)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\n", " ")
+    )
+
+
 def _repo_label(path: str) -> str:
     """The repository's name, without the surrounding filesystem path."""
     name = os.path.basename(os.path.abspath(path))
@@ -112,7 +138,7 @@ def render_terminal(dossier: Dossier, no_color: bool = False, stream=None) -> st
     lines: List[str] = []
     add = lines.append
 
-    add(f"{p.bold}vulnvet{p.reset} - grounding {dossier.report_path}")
+    add(f"{p.bold}vulnvet{p.reset} - grounding {sanitize(dossier.report_path)}")
     add(
         f"  against {dossier.repo_path} at {p.bold}{dossier.rev}{p.reset} "
         f"({dossier.rev_sha[:12]})"
@@ -124,14 +150,17 @@ def render_terminal(dossier: Dossier, no_color: bool = False, stream=None) -> st
         for f in findings:
             color = p.for_verdict(f.verdict)
             glyph = _GLYPH[f.verdict]
-            add(f"  {color}{glyph} [{f.verdict.value:<11}]{p.reset} {f.claim.value}")
-            add(f"      {p.dim}{f.evidence}{p.reset}")
+            add(
+                f"  {color}{glyph} [{f.verdict.value:<11}]{p.reset} "
+                f"{sanitize(f.claim.value)}"
+            )
+            add(f"      {p.dim}{sanitize(f.evidence)}{p.reset}")
             if f.suggestion:
-                add(f"      {p.dim}hint: {f.suggestion}{p.reset}")
+                add(f"      {p.dim}hint: {sanitize(f.suggestion)}{p.reset}")
             if f.claim.report_line:
                 add(
                     f"      {p.dim}report line {f.claim.report_line}: "
-                    f"{f.claim.context[:100]}{p.reset}"
+                    f"{sanitize(f.claim.context)[:100]}{p.reset}"
                 )
         add("")
 
@@ -162,7 +191,7 @@ def render_terminal(dossier: Dossier, no_color: bool = False, stream=None) -> st
     add(f"  {grade_color}{p.bold}{a.grade}{p.reset}")
     add(f"  {a.summary}")
     for note in dossier.notes:
-        add(f"  {p.dim}note: {note}{p.reset}")
+        add(f"  {p.dim}note: {sanitize(note)}{p.reset}")
     add("")
     add(f"  {p.dim}{DISCLAIMER}{p.reset}")
     return "\n".join(lines) + "\n"
@@ -179,7 +208,7 @@ def render_markdown(dossier: Dossier) -> str:
 
     add("## vulnvet triage dossier")
     add("")
-    add(f"**Report:** `{os.path.basename(dossier.report_path)}`  ")
+    add(f"**Report:** `{_md_cell(os.path.basename(dossier.report_path))}`  ")
     # The markdown dossier is meant to be pasted into a public ticket, so
     # it names the repository, not the maintainer's directory layout. The
     # revision is what makes the result reproducible anyway.
@@ -209,13 +238,12 @@ def render_markdown(dossier: Dossier) -> str:
         add("| verdict | claim | evidence |")
         add("|---|---|---|")
         for f in findings:
-            evidence = f.evidence
+            evidence = _md_cell(f.evidence)
             if f.suggestion:
-                evidence += f" *{f.suggestion}*"
-            claim_cell = f"`{f.claim.value}`"
+                evidence += f" *{_md_cell(f.suggestion)}*"
+            claim_cell = "`" + _md_cell(f.claim.value).replace("`", "'") + "`"
             if f.claim.report_line:
                 claim_cell += f" (report line {f.claim.report_line})"
-            evidence = evidence.replace("|", "\\|")
             add(f"| {_MD_BADGE[f.verdict]} | {claim_cell} | {evidence} |")
         add("")
 
@@ -223,7 +251,7 @@ def render_markdown(dossier: Dossier) -> str:
         add("### Notes")
         add("")
         for note in dossier.notes:
-            add(f"- {note}")
+            add(f"- {_md_cell(note)}")
         add("")
 
     add("---")
@@ -246,13 +274,17 @@ def render_json(dossier: Dossier) -> str:
     def finding_dict(f: Finding) -> dict:
         return {
             "type": f.claim.type.value,
-            "claim": f.claim.value,
+            "claim": sanitize(f.claim.value),
             "verdict": f.verdict.name,
             "evidence": f.evidence,
             "suggestion": f.suggestion,
             "strong_signal": f.is_strong_signal,
             "report_line": f.claim.report_line,
-            "context": f.claim.context,
+            "context": sanitize(f.claim.context),
+            "details": {
+                k: v for k, v in f.claim.extra.items()
+                if isinstance(v, (str, int, float, bool, type(None)))
+            },
             "source": f.claim.source,
         }
 
