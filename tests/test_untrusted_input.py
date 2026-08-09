@@ -156,6 +156,13 @@ def test_hostile_report_terminates_quickly(fixture_repo):
         "‮​test_symbol_name​",
         "版本 1.0.0 通过 1.1.0",
     ],
+    # Explicit ids: pytest puts the parametrize id into an environment
+    # variable, and Windows caps those at 32767 characters.
+    ids=[
+        "empty", "nul-bytes", "many-fences", "many-backticks",
+        "huge-address", "many-identifiers", "deep-path", "bidi-override",
+        "non-ascii-prose",
+    ],
 )
 def test_pathological_inputs_do_not_crash(text, fixture_repo):
     repo = Repo(fixture_repo)
