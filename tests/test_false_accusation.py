@@ -270,3 +270,43 @@ def test_submodule_citations_are_unverifiable_not_false(submodule_repo):
         assert "submodule" in finding.evidence
     assert dossier.count(Verdict.NOT_FOUND) == 0
     assert dossier.strong_signals == []
+
+
+def test_padding_with_real_filenames_does_not_defuse_a_fabrication(fixture_repo):
+    """Naming real files proves only that the reporter can read a
+    directory listing. It must not buy a fabricated symbol a better
+    grade."""
+    text = """\
+See src/http.c, lib/util.c and README.md. Affects 1.0.0 and 1.1.0.
+The overflow is in `sanitize_priority_frame()` and the quoted source:
+
+The relevant code from src/http.c:
+
+```c
+int sanitize_priority_frame(frame_ctx *ctx, const uint8_t *data)
+{
+    ctx->weight = data[4] * WEIGHT_SCALE_FACTOR;
+    return apply_priority_update(ctx, data);
+}
+```
+"""
+    dossier = vet(text, fixture_repo)
+    assert dossier.count(Verdict.VERIFIED) >= 3, "padding should verify"
+    assert dossier.substantive_verified == 0, (
+        "none of the padding shows the reporter read the code"
+    )
+    assert dossier.assessment().grade == "SEVERE GROUNDING FAILURES"
+
+
+def test_a_single_strong_signal_is_always_named_in_the_summary(fixture_repo):
+    """Even when the grade does not escalate, a citation that does not
+    exist has to be visible in the headline text."""
+    text = """\
+`parse_header_line()` in `src/http.c` at src/http.c:15 and src/http.c:18
+and lib/util.c:8 all look right, but `frobnicate_widget()` is where the
+overflow happens.
+"""
+    dossier = vet(text, fixture_repo)
+    assessment = dossier.assessment()
+    assert assessment.grade == "PARTIAL GROUNDING"
+    assert "frobnicate_widget" in assessment.summary

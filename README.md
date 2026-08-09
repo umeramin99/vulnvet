@@ -189,7 +189,7 @@ for finding in dossier.strong_signals:
 - **Reformatted quotes** — a reporter who re-indents or line-wraps code they copied will score lower on the quoted-code check than one who pastes verbatim. That lands on MISMATCH, never on a fabrication signal.
 - **Shallow clones** hide tags and old commits; vulnvet says "shallow or tagless clone?" rather than pretending. Use `fetch-depth: 0` in CI.
 - **Search results are capped** at 50 hits per query, so evidence lines say "50+" rather than an exact count, and vulnvet won't assert "only in documentation" off a truncated list.
-- A determined fabricator who pads a report with real symbols can raise their verified count. The dossier shows per-claim evidence precisely so the count alone is never the answer.
+- **Padding is the obvious attack**, and it's partly mitigated rather than solved. Listing real filenames is free, so only claims that show the reporter actually read the code — symbols, stack frames, quoted code, `file:line` — count toward "well grounded"; a wall of true trivia no longer defuses escalation. A fabricated citation is also named in the summary text even when the grade doesn't escalate. But someone willing to cite genuinely real symbols around a fabricated conclusion will still score well, which is why the dossier gives per-claim evidence: the counts are never the answer on their own.
 
 vulnvet also treats the report as hostile input, because it is: report text can't reach `git` as a command-line option, can't inject ANSI escapes into the dossier to forge verdict lines, can't corrupt the markdown table, and can't hang the tool. Those properties have tests that fail when the guard is removed.
 
