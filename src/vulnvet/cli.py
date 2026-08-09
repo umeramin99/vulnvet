@@ -101,9 +101,10 @@ def _pick_format(args: argparse.Namespace) -> str:
     if args.format:
         return args.format
     if args.output:
-        if args.output.endswith((".md", ".markdown")):
+        lowered = args.output.lower()
+        if lowered.endswith((".md", ".markdown")):
             return "markdown"
-        if args.output.endswith(".json"):
+        if lowered.endswith(".json"):
             return "json"
     return "term"
 

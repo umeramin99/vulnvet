@@ -162,23 +162,34 @@ class Dossier:
         # when failures clearly outweigh what the report got right.
         failures = not_found + mismatch
         if strong >= 2 or (strong >= 1 and failures >= max(2, 2 * verified)):
+            count_phrase = (
+                "Multiple cited technical details do not exist"
+                if failures > 1
+                else "A cited technical detail does not exist"
+            )
             return Assessment(
                 grade="SEVERE GROUNDING FAILURES",
                 summary=(
-                    "Multiple cited technical details do not exist in the "
-                    "codebase at the checked revision. This pattern is "
-                    "characteristic of fabricated reports. Verify the "
-                    "dossier below before responding to the reporter."
+                    f"{count_phrase} in the codebase at the checked "
+                    "revision, and little else in the report checks out. "
+                    "This pattern is characteristic of fabricated reports. "
+                    "Read the dossier below before responding to the "
+                    "reporter."
                 ),
             )
         if not_found or mismatch:
+            opening = (
+                "Some claims check out and some do not."
+                if verified
+                else "No claim checked out, though none is a strong "
+                "fabrication signal on its own."
+            )
             return Assessment(
                 grade="PARTIAL GROUNDING",
                 summary=(
-                    "Some claims check out and some do not. This can mean "
-                    "sloppiness, an honest mistake (wrong version, renamed "
-                    "file), or partial fabrication - read the per-claim "
-                    "evidence before judging."
+                    f"{opening} This can mean sloppiness, an honest mistake "
+                    "(wrong version, renamed file), or partial fabrication - "
+                    "read the per-claim evidence before judging."
                 ),
             )
         if verified == 0:
