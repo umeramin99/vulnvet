@@ -25,7 +25,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check the page is self-contained
         # The site must not depend on a CDN staying up, and must not leak
@@ -39,6 +39,11 @@ jobs:
           echo "self-contained"
 
       - uses: actions/configure-pages@v5
+        with:
+          # Turn Pages on rather than requiring a trip to Settings.
+          # The first run on a repository where it is off would
+          # otherwise fail with "Get Pages site failed".
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs
