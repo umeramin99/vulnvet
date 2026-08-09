@@ -157,7 +157,11 @@ class Dossier:
                     "but it is not evidence of fabrication."
                 ),
             )
-        if strong >= 2 or (strong >= 1 and not_found > verified):
+        # One fabricated citation among many that check out is a
+        # correction to ask for, not a pattern. Escalate on repetition, or
+        # when failures clearly outweigh what the report got right.
+        failures = not_found + mismatch
+        if strong >= 2 or (strong >= 1 and failures >= max(2, 2 * verified)):
             return Assessment(
                 grade="SEVERE GROUNDING FAILURES",
                 summary=(

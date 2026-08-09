@@ -57,11 +57,12 @@ COMMIT_BARE_RE = re.compile(r"\b([0-9a-f]{40})\b")
 INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 
 IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
-PAREN_CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_:]*[A-Za-z0-9_])\(")
+PAREN_CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]{0,78}(?:::[A-Za-z_][A-Za-z0-9_]{0,78}){0,4})\(")
 SNAKE2_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+){2,})\b")
 FUNC_CONTEXT_RE = re.compile(
     r"\b(?:function|method|routine|handler|api)\s+[`\"']?"
-    r"([A-Za-z_][A-Za-z0-9_:.]*[A-Za-z0-9_])[`\"']?",
+    r"([A-Za-z_][A-Za-z0-9_.]{0,78}(?:::[A-Za-z_][A-Za-z0-9_.]{0,78}){0,4})"
+    r"[`\"']?",
     re.IGNORECASE,
 )
 
@@ -69,7 +70,8 @@ FUNC_CONTEXT_RE = re.compile(
 #: Checking the pair together catches a real function name cited in a file
 #: it does not live in, which grading them separately would miss.
 ATTRIBUTION_RE = re.compile(
-    r"[`\"']?\b([A-Za-z_][A-Za-z0-9_:]*[A-Za-z0-9_])\b(?:\s*\(\s*\))?[`\"']?"
+    r"[`\"']?\b([A-Za-z_][A-Za-z0-9_]{0,78}(?:::[A-Za-z_][A-Za-z0-9_]{0,78}){0,4})"
+    r"\b(?:\s*\(\s*\))?[`\"']?"
     r"\s*(?:function\s+)?(?:is\s+)?(?:defined\s+|declared\s+|implemented\s+|"
     r"located\s+|found\s+)?(?:in|of|from|inside|within|at)\s+"
     r"(?:the\s+)?(?:file\s+)?[`\"']?"
@@ -77,6 +79,8 @@ ATTRIBUTION_RE = re.compile(
 )
 
 VER = r"(\d+(?:\.\d+)+[a-z]?)"
+#: Same pattern, named, for use alongside other named groups.
+VER_NAMED = r"(?P<ver>\d+(?:\.\d+)+[a-z]?)"
 VERSION_RANGE_RE = re.compile(
     r"(?:versions?\s+|v)%s\s*(?:through|to|until|up\s+to|-|–|—)\s*v?%s"
     % (VER, VER),
@@ -112,7 +116,10 @@ VERSION_ROLE_RES: List[Tuple[str, re.Pattern]] = [
             r"(?:affects?|affecting|impacts?|present\s+in|prior\s+to|before|"
             r"tested\s+(?:on|against|with)|reproduced\s+(?:on|in|with)|"
             r"observed\s+in|as\s+of)\s+"
-            r"(?:[A-Za-z][A-Za-z0-9_.-]{0,20}\s+)?(?:version\s+|v)?%s" % VER,
+            # A product name before the number ("tested on Ubuntu 22.04")
+            # is captured so the checker knows the version is not ours.
+            r"(?P<product>[A-Za-z][A-Za-z0-9_.-]{0,20}\s+)?(?:version\s+|v)?%s"
+            % VER_NAMED,
             re.IGNORECASE,
         ),
     ),
@@ -132,7 +139,10 @@ FRAME_GDB_RE = re.compile(
     r"\s*\([^)]*\)\s+at\s+([^\s:()]+):(\d+)"
 )
 
-FENCE_RE = re.compile(r"^(```+|~~~+)\s*([A-Za-z0-9_+-]*)\s*$")
+#: CommonMark allows any info string after the opening fence
+#: (```c title="x", ```{.c}), and a closing fence must be at least
+#: as long as the opener and carry no info string.
+FENCE_RE = re.compile(r"^(`{3,}|~{3,})[ \t]*(\S*)[^`]*$")
 
 DIFF_FILE_RE = re.compile(r"^(?:\+\+\+|---)\s+(?:[ab]/)?(\S+)")
 
@@ -169,6 +179,51 @@ SHELL_LANGS = frozenset({"sh", "bash", "shell", "console", "zsh", "shell-session
 MAX_QUOTE_LINES = 8
 MIN_QUOTE_LINE_LEN = 12
 MAX_CLAIMS = 200
+#: Line numbers past this are not plausible source positions, and
+#: Python refuses to int() a numeric string longer than 4300 digits.
+MAX_LINE_DIGITS = 9
+#: Prose lines longer than this are data (hex dumps, minified blobs,
+#: base64), not citations, and scanning them only costs time.
+MAX_PROSE_LINE = 2000
+
+
+#: Words that can precede a version without naming a different product.
+_VERSION_FILLER = frozenset(
+    {
+        "the", "a", "an", "on", "in", "at", "with", "against", "to", "of",
+        "and", "or", "both", "all", "only", "up", "release", "releases",
+        "version", "versions", "tag", "build", "branch", "it", "this",
+        "that", "our", "your", "their", "its", "current", "latest",
+        "stable", "master", "main", "from", "since", "before", "after",
+        "using", "under", "than", "as", "is", "was", "are", "were",
+    }
+)
+
+
+def _named_product(match: "re.Match") -> Optional[str]:
+    """The product a version was attributed to, if it is not ours.
+
+    "tested on Ubuntu 22.04" is a claim about Ubuntu, and checking it
+    against this project's release tags would report a real environment
+    note as a nonexistent version.
+    """
+    if "product" not in match.re.groupindex:
+        return None
+    raw = match.group("product")
+    if not raw:
+        return None
+    word = raw.strip().strip(",;:").lower()
+    if not word or word in _VERSION_FILLER:
+        return None
+    return raw.strip()
+
+
+def _safe_line(text: Optional[str]) -> Optional[int]:
+    """A report-supplied line number, or None if it is not one."""
+    if not text or len(text) > MAX_LINE_DIGITS or not text.isdigit():
+        return None
+    value = int(text)
+    return value if value > 0 else None
 
 
 def _mask(line: str, match: "re.Match") -> str:
@@ -227,7 +282,29 @@ def _classify_block(block: _Block) -> str:
     return "output"
 
 
+#: Line-number gutters that code viewers add when you copy from them:
+#: "  142  code", "142: code", "142 | code", "142→code".
+GUTTER_RE = re.compile(r"^\s*\d{1,6}\s*(?:[:|→\t]|(?=\s{2,}))\s*")
+
+
+def _strip_gutter(line: str) -> str:
+    """Remove a copied line-number prefix, if the block consistently has one.
+
+    A reporter who copies from GitHub's blob view brings the line numbers
+    along. Searching for "142  if (len > MAX)" finds nothing, and the
+    report gets told it quotes code the project does not contain.
+    """
+    return GUTTER_RE.sub("", line, count=1)
+
+
 def _quote_candidate_lines(lines: List[str]) -> List[str]:
+    # Only strip gutters when most non-empty lines have one; otherwise a
+    # legitimate line starting with a number would be mangled.
+    nonempty = [l for l in lines if l.strip()]
+    guttered = sum(1 for l in nonempty if GUTTER_RE.match(l))
+    if nonempty and guttered >= max(2, int(len(nonempty) * 0.6)):
+        lines = [_strip_gutter(l) for l in lines]
+
     candidates = []
     for raw in lines:
         stripped = raw.strip()
@@ -310,6 +387,7 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
     prose: List[Tuple[int, str]] = []  # (1-based line number, text)
     current: Optional[_Block] = None
     fence_marker = ""
+    fence_len = 3
     block_quote_depth = 0
     for i, line in enumerate(lines, start=1):
         # A fence may sit behind a blockquote prefix even in reports that
@@ -322,6 +400,7 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
 
         if current is None and fence:
             fence_marker = fence.group(1)[0]
+            fence_len = len(fence.group(1))
             block_quote_depth = depth
             current = _Block(i, fence.group(2))
             continue
@@ -329,6 +408,9 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
             current is not None
             and fence
             and fence.group(1)[0] == fence_marker
+            # CommonMark: the closer must be at least as long as the
+            # opener, so a ``` inside a ```` block does not end it.
+            and len(fence.group(1)) >= fence_len
             and not fence.group(2)
         ):
             blocks.append(current)
@@ -350,8 +432,12 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
         claims.append(claim)
 
     # ---- pass 2: prose claims ---------------------------------------------
+    long_lines = 0
     for lineno, raw in prose:
         if not raw.strip():
+            continue
+        if len(raw) > MAX_PROSE_LINE:
+            long_lines += 1
             continue
         context = raw.strip()[:160]
 
@@ -429,16 +515,27 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
 
         for role, pattern in VERSION_ROLE_RES:
             for m in pattern.finditer(line):
-                if in_consumed(m.start(1)):
+                if in_consumed(m.start("ver" if "ver" in m.re.groupindex else 1)):
                     continue
+                version = (
+                    m.group("ver")
+                    if "ver" in m.re.groupindex
+                    else m.group(1)
+                )
+                if not version:
+                    continue
+                extra = {"role": role}
+                product = _named_product(m)
+                if product:
+                    extra["product"] = product
                 add(
                     Claim(
                         ClaimType.VERSION,
-                        m.group(1),
+                        version,
                         lineno,
                         context,
                         "prose",
-                        {"role": role},
+                        extra,
                     )
                 )
                 consumed_spans.append(m.span())
@@ -449,7 +546,7 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
             groups = fm.groups()
             func = groups[0]
             path = groups[1] if len(groups) > 1 else None
-            ln = int(groups[2]) if len(groups) > 2 and groups[2] else None
+            ln = _safe_line(groups[2]) if len(groups) > 2 else None
             add(
                 Claim(
                     ClaimType.STACK_FRAME,
@@ -470,15 +567,16 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
                     path = path[len(prefix):]
             if path.lower() in PRODUCT_FILE_NAMES:
                 continue
-            if m.group(2):
+            file_line = _safe_line(m.group(2))
+            if file_line is not None:
                 add(
                     Claim(
                         ClaimType.FILE_LINE,
-                        f"{path}:{m.group(2)}",
+                        f"{path}:{file_line}",
                         lineno,
                         context,
                         "prose",
-                        {"path": path, "line": int(m.group(2))},
+                        {"path": path, "line": file_line},
                     )
                 )
             else:
@@ -540,7 +638,7 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
                 groups = fm.groups()
                 func = groups[0]
                 path = groups[1] if len(groups) > 1 else None
-                ln = int(groups[2]) if len(groups) > 2 and groups[2] else None
+                ln = _safe_line(groups[2]) if len(groups) > 2 else None
                 if is_stopword(func):
                     continue
                 add(
@@ -558,17 +656,26 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
         if kind == "diff":
             hint_path: Optional[str] = None
             removed_or_context: List[str] = []
+            # A patch that creates a file has "--- /dev/null" as its
+            # pre-image. Its post-image path is what the reporter proposes
+            # to add, not a file they claim already exists, so it must not
+            # be graded as a citation.
+            creates_file = any(
+                raw.startswith("--- ") and "/dev/null" in raw
+                for raw in block.lines
+            )
             for raw in block.lines:
                 dm = DIFF_FILE_RE.match(raw)
                 if dm and dm.group(1) not in ("/dev/null",):
                     path = dm.group(1)
                     hint_path = path
-                    add(
-                        Claim(
-                            ClaimType.FILE, path, block.start_line, context,
-                            "diff", {"path": path},
+                    if not creates_file:
+                        add(
+                            Claim(
+                                ClaimType.FILE, path, block.start_line,
+                                context, "diff", {"path": path},
+                            )
                         )
-                    )
                 elif raw.startswith("-") and not raw.startswith("---"):
                     removed_or_context.append(raw[1:])
                 elif raw.startswith(" "):
@@ -633,6 +740,11 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
             )
         )
 
+    if long_lines:
+        notes.append(
+            f"{long_lines} line(s) longer than {MAX_PROSE_LINE} characters "
+            "were skipped as data rather than prose."
+        )
     if skipped_poc_blocks:
         notes.append(
             f"{skipped_poc_blocks} code block(s) looked like reporter-supplied "
@@ -669,15 +781,16 @@ def _extract_from_code_span(
         path = fm.group(1).lstrip("./")
         if path.lower() in PRODUCT_FILE_NAMES:
             return
-        if fm.group(2):
+        span_line = _safe_line(fm.group(2))
+        if span_line is not None:
             add(
                 Claim(
                     ClaimType.FILE_LINE,
-                    f"{path}:{fm.group(2)}",
+                    f"{path}:{span_line}",
                     lineno,
                     context,
                     "inline-code",
-                    {"path": path, "line": int(fm.group(2))},
+                    {"path": path, "line": span_line},
                 )
             )
         else:
