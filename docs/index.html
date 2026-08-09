@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vulnvet — ground a vulnerability report against the codebase</title>
+<meta name="description" content="A CLI that checks whether a vulnerability report's cited symbols, files, lines and quoted code actually exist in your repository, and hands you the evidence.">
+<meta property="og:title" content="vulnvet">
+<meta property="og:description" content="Ground a vulnerability report's claims against the actual codebase — before you spend hours triaging it.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230E5A78'/><path d='M3.5 8.5l3 3 6-6.5' stroke='white' stroke-width='2' fill='none'/></svg>">
+<style>
+:root{
+  --paper:#F1F3F4;
+  --sheet:#FBFCFC;
+  --ink:#131C24;
+  --ink-soft:#4C5A66;
+  --ink-faint:#7B8791;
+  --rule:#C7D0D6;
+  --rule-soft:#DDE4E8;
+  --stamp:#0E5A78;
+  --stamp-wash:#E2EDF2;
+  --v-ok:#3D6B4E;
+  --v-no:#9C3324;
+  --v-mm:#8A6520;
+  --v-unk:#6C7883;
+
+  --mono:ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --serif:"Iowan Old Style",Charter,"Bitstream Charter","Palatino Linotype",Palatino,Georgia,serif;
+
+  --measure:38rem;
+  --step--1:0.795rem;
+  --step-0:1.0rem;
+  --step-1:1.32rem;
+  --step-2:1.72rem;
+  --step-3:2.34rem;
+  --step-4:3.1rem;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#11171B;
+    --sheet:#171F25;
+    --ink:#DFE6EA;
+    --ink-soft:#9FADB7;
+    --ink-faint:#77858F;
+    --rule:#29343C;
+    --rule-soft:#212B32;
+    --stamp:#5EB6D9;
+    --stamp-wash:#16303C;
+    --v-ok:#7FB78E;
+    --v-no:#E28D7E;
+    --v-mm:#D6B06A;
+    --v-unk:#94A2AD;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#11171B;
+  --sheet:#171F25;
+  --ink:#DFE6EA;
+  --ink-soft:#9FADB7;
+  --ink-faint:#77858F;
+  --rule:#29343C;
+  --rule-soft:#212B32;
+  --stamp:#5EB6D9;
+  --stamp-wash:#16303C;
+  --v-ok:#7FB78E;
+  --v-no:#E28D7E;
+  --v-mm:#D6B06A;
+  --v-unk:#94A2AD;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--serif);
+  font-size:var(--step-0);
+  line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--stamp);text-underline-offset:.18em;text-decoration-thickness:.06em}
+a:focus-visible,button:focus-visible{outline:2px solid var(--stamp);outline-offset:3px}
+
+/* ---- filing-margin grid --------------------------------------------- */
+.wrap{max-width:64rem;margin:0 auto;padding:0 1.25rem}
+.doc{
+  display:grid;
+  grid-template-columns:minmax(0,var(--measure));
+  justify-content:center;
+  gap:0;
+}
+@media (min-width:64rem){
+  .doc{grid-template-columns:9.5rem minmax(0,var(--measure));justify-content:center;column-gap:2.5rem}
+}
+.section{display:contents}
+.marker{
+  font-family:var(--mono);
+  font-size:var(--step--1);
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--ink-faint);
+  padding-top:3.4rem;
+}
+@media (max-width:63.99rem){
+  .marker{padding:2.6rem 0 0;border-top:1px solid var(--rule-soft);margin-top:2.4rem}
+}
+@media (min-width:64rem){
+  .marker{text-align:right;border-right:1px solid var(--rule);padding-right:2.5rem;margin-right:-2.5rem}
+  .body{padding-top:3.4rem}
+}
+.body>*+*{margin-top:1.05rem}
+.body h2{
+  font-family:var(--mono);
+  font-size:var(--step-1);
+  font-weight:600;
+  letter-spacing:-.01em;
+  line-height:1.25;
+  margin:0 0 .35rem;
+  text-wrap:balance;
+}
+.body p{margin:0;max-width:38rem}
+.lede{color:var(--ink-soft)}
+
+/* ---- masthead -------------------------------------------------------- */
+header.mast{padding:4.5rem 0 0}
+.eyebrow{
+  font-family:var(--mono);
+  font-size:var(--step--1);
+  letter-spacing:.2em;
+  text-transform:uppercase;
+  color:var(--stamp);
+  margin:0 0 1.1rem;
+}
+h1{
+  font-family:var(--mono);
+  font-weight:700;
+  font-size:clamp(2.1rem,7vw,var(--step-4));
+  letter-spacing:-.035em;
+  line-height:.98;
+  margin:0 0 1.1rem;
+  text-wrap:balance;
+}
+.deck{
+  font-size:var(--step-1);
+  line-height:1.45;
+  color:var(--ink-soft);
+  margin:0 0 1.6rem;
+  max-width:34rem;
+  text-wrap:pretty;
+}
+.deck strong{color:var(--ink);font-weight:600}
+.actions{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center}
+.btn{
+  font-family:var(--mono);
+  font-size:var(--step--1);
+  letter-spacing:.04em;
+  text-decoration:none;
+  padding:.62rem 1rem;
+  border:1px solid var(--stamp);
+  color:var(--sheet);
+  background:var(--stamp);
+  transition:opacity .15s ease;
+}
+.btn:hover{opacity:.86}
+.btn.ghost{background:transparent;color:var(--stamp)}
+.btn.ghost:hover{background:var(--stamp-wash);opacity:1}
+
+/* ---- the dossier ----------------------------------------------------- */
+.exhibit{margin:2.6rem 0 0}
+.exhibit-head{
+  display:flex;flex-wrap:wrap;gap:.75rem;
+  align-items:baseline;justify-content:space-between;
+  padding-bottom:.55rem;border-bottom:1px solid var(--rule);
+}
+.exhibit-label{
+  font-family:var(--mono);font-size:var(--step--1);
+  letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);
+}
+.switch{display:flex;border:1px solid var(--rule)}
+.switch button{
+  font-family:var(--mono);font-size:var(--step--1);
+  letter-spacing:.03em;
+  background:transparent;color:var(--ink-soft);
+  border:0;padding:.4rem .7rem;cursor:pointer;
+}
+.switch button+button{border-left:1px solid var(--rule)}
+.switch button[aria-pressed="true"]{background:var(--stamp);color:var(--sheet)}
+
+.dossier{
+  font-family:var(--mono);
+  font-size:.8125rem;
+  line-height:1.55;
+  background:var(--sheet);
+  border:1px solid var(--rule);
+  border-top:0;
+  padding:1.1rem 0;
+  overflow-x:auto;
+}
+.dossier .cmd{padding:0 1.1rem .85rem;color:var(--ink-faint)}
+.dossier .cmd b{color:var(--ink);font-weight:600}
+.group{
+  font-size:.75rem;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--ink-faint);padding:.9rem 1.1rem .3rem;
+}
+.claim{padding:.28rem 1.1rem .28rem .95rem;border-left:3px solid transparent}
+.claim .head{display:flex;flex-wrap:wrap;gap:0 .6rem;align-items:baseline}
+.claim .verdict{white-space:pre}
+.verdict{font-weight:700;letter-spacing:.02em}
+.name{color:var(--ink);overflow-wrap:anywhere;white-space:normal}
+.why{color:var(--ink-soft);font-size:.75rem;line-height:1.5;margin-top:.12rem;white-space:normal}
+.claim.ok{border-left-color:var(--v-ok)}   .claim.ok .verdict{color:var(--v-ok)}
+.claim.no{border-left-color:var(--v-no)}   .claim.no .verdict{color:var(--v-no)}
+.claim.mm{border-left-color:var(--v-mm)}   .claim.mm .verdict{color:var(--v-mm)}
+.claim.unk{border-left-color:var(--v-unk)} .claim.unk .verdict{color:var(--v-unk)}
+.tally{
+  margin:.9rem 1.1rem 0;padding-top:.75rem;border-top:1px solid var(--rule-soft);
+  display:flex;flex-wrap:wrap;gap:1rem;font-size:.75rem;color:var(--ink-soft);
+  font-variant-numeric:tabular-nums;
+}
+.grade{padding:.75rem 1.1rem 0;font-weight:700;letter-spacing:.04em}
+.grade.bad{color:var(--v-no)} .grade.good{color:var(--v-ok)}
+.caption{
+  font-size:var(--step--1);color:var(--ink-faint);
+  margin:.6rem 0 0;font-style:italic;
+}
+[data-anim] .claim,[data-anim] .group{opacity:0;animation:rise .26s ease forwards}
+@keyframes rise{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){
+  [data-anim] .claim,[data-anim] .group{opacity:1;animation:none}
+}
+
+/* ---- content bits ---------------------------------------------------- */
+pre{
+  font-family:var(--mono);font-size:.8125rem;line-height:1.6;
+  background:var(--sheet);border:1px solid var(--rule);
+  padding:.9rem 1.1rem;overflow-x:auto;margin:0;
+}
+pre .c{color:var(--ink-faint)}
+code{font-family:var(--mono);font-size:.9em;background:var(--stamp-wash);padding:.08em .3em}
+a code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;font-size:.9375rem}
+th,td{text-align:left;padding:.5rem .7rem .5rem 0;border-bottom:1px solid var(--rule-soft);vertical-align:top}
+th{
+  font-family:var(--mono);font-size:var(--step--1);font-weight:600;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);
+  border-bottom:1px solid var(--rule);
+}
+td:first-child{font-family:var(--mono);font-size:.8125rem;white-space:nowrap;padding-right:1.2rem}
+.scroll{overflow-x:auto}
+ul.plain{list-style:none;padding:0;margin:0}
+ul.plain li{padding:.5rem 0 .5rem .95rem;border-left:3px solid var(--rule);}
+ul.plain li+li{margin-top:.15rem}
+ul.plain li b{font-weight:600}
+.legend{display:grid;gap:.15rem;margin:0;padding:0;list-style:none}
+.legend li{display:grid;grid-template-columns:9.5rem 1fr;gap:.9rem;padding:.45rem 0;border-bottom:1px solid var(--rule-soft)}
+.legend .tag{font-family:var(--mono);font-size:.75rem;letter-spacing:.06em;font-weight:700}
+.legend .tag.ok{color:var(--v-ok)} .legend .tag.no{color:var(--v-no)}
+.legend .tag.mm{color:var(--v-mm)} .legend .tag.unk{color:var(--v-unk)}
+@media (max-width:30rem){.legend li{grid-template-columns:1fr;gap:.1rem}}
+
+blockquote{
+  margin:0;padding:.8rem 0 .8rem 1.1rem;border-left:3px solid var(--stamp);
+  color:var(--ink-soft);font-size:.9375rem;
+}
+
+footer{
+  margin-top:5rem;border-top:1px solid var(--rule);
+  padding:1.6rem 0 3rem;
+  font-family:var(--mono);font-size:var(--step--1);color:var(--ink-faint);
+  display:flex;flex-wrap:wrap;gap:.5rem 1.4rem;justify-content:space-between;
+}
+footer a{color:var(--ink-soft)}
+.theme{
+  position:fixed;top:.85rem;right:.85rem;z-index:5;
+  font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;
+  background:var(--sheet);color:var(--ink-soft);
+  border:1px solid var(--rule);padding:.4rem .6rem;cursor:pointer;
+}
+.theme:hover{color:var(--ink)}
+</style>
+</head>
+<body>
+<button class="theme" id="theme" type="button" aria-label="Switch colour theme">Theme</button>
+
+<div class="wrap">
+<div class="doc">
+
+  <div class="section">
+    <div class="marker" style="padding-top:4.5rem"></div>
+    <header class="mast body" style="padding-top:0">
+      <p class="eyebrow">Triage tooling for maintainers</p>
+      <h1>vulnvet</h1>
+      <p class="deck">A vulnerability report cites a function, a file, a line, a version. <strong>vulnvet checks whether any of them exist</strong>, at the revision the report claims to be about, and hands you the evidence.</p>
+      <div class="actions">
+        <a class="btn" href="https://github.com/umeramin99/Open-Source">Source on GitHub</a>
+        <a class="btn ghost" href="#install">Install</a>
+      </div>
+
+      <div class="exhibit">
+        <div class="exhibit-head">
+          <span class="exhibit-label">Run against curl 8.4.0</span>
+          <div class="switch" role="group" aria-label="Choose a report">
+            <button type="button" id="tab-fab" aria-pressed="true">fabricated report</button>
+            <button type="button" id="tab-real" aria-pressed="false">honest report</button>
+          </div>
+        </div>
+        <div class="dossier" id="dossier" data-anim></div>
+        <p class="caption" id="caption"></p>
+      </div>
+    </header>
+  </div>
+
+  <div class="section">
+    <div class="marker">Why</div>
+    <div class="body">
+      <h2>Disproving one sentence costs an hour</h2>
+      <p>In January 2026 curl ended its six-year bug bounty, its maintainer describing the volume of AI-generated reports as feeling like a denial-of-service attack. The Python Software Foundation's security developer-in-residence documented the same load across CPython, pip and urllib3. The Jazzband collective — 84 projects, roughly 150 million downloads a month — shut down citing AI spam.</p>
+      <p>Every countermeasure so far has been policy: honour-system checkboxes, closing the bounty, banning reporters. But the expensive part was never the policy. It was checking out the right tag, grepping for a function that turns out never to have existed, opening a file to count its lines, and working out whether those version numbers were ever released.</p>
+      <p>That step is mechanical. vulnvet does it in about a second, and nothing more.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="marker">Verdicts</div>
+    <div class="body">
+      <h2>Four answers, each with its evidence</h2>
+      <ul class="legend">
+        <li><span class="tag ok">VERIFIED</span><span>The citation corresponds to the codebase. <em>Not</em> a judgement that the vulnerability is real — only that the reporter is describing code that exists.</span></li>
+        <li><span class="tag no">NOT FOUND</span><span>We looked in the right place and it isn't there. On a symbol, a stack frame, or quoted source, this is the strong signal.</span></li>
+        <li><span class="tag mm">MISMATCH</span><span>Partly corroborated. The function exists but not in that file; the file is 400 lines and they cited line 5000; the version range runs backwards.</span></li>
+        <li><span class="tag unk">UNCHECKABLE</span><span>We could not tell either way, and say so rather than guess.</span></li>
+      </ul>
+      <p style="margin-top:1.4rem">Every verdict states what was searched and what was found, so you can check it by hand. A verdict you have to take on faith would defeat the point.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="marker">Checks</div>
+    <div class="body">
+      <h2>What it grades</h2>
+      <div class="scroll">
+      <table>
+        <thead><tr><th>Claim</th><th>Question</th></tr></thead>
+        <tbody>
+          <tr><td>symbols</td><td>Does the identifier appear in the tree at all? Is it defined in source, or only mentioned in release notes?</td></tr>
+          <tr><td>stack frames</td><td>Does the function exist, does the file, is the line inside it, and does that function actually appear in that file?</td></tr>
+          <tr><td>quoted code</td><td>Do the quoted lines appear verbatim? Which ones don't?</td></tr>
+          <tr><td>file:line</td><td>Does the file exist, and does it have that many lines?</td></tr>
+          <tr><td>files</td><td>Does the path exist — or is there a same-named file elsewhere, or a near miss?</td></tr>
+          <tr><td>versions</td><td>Do those versions exist as release tags? Is the range inverted?</td></tr>
+          <tr><td>commits</td><td>Does that commit exist in this repository?</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="marker">Restraint</div>
+    <div class="body">
+      <h2>It fails toward "cannot tell"</h2>
+      <p class="lede">A tool that cries fabrication at an honest reporter is worse than no tool. Every ambiguity resolves away from accusing:</p>
+      <ul class="plain">
+        <li><b>Proof-of-concept code is never graded.</b> The reporter's own script is not a claim about your codebase, and searching for it would guarantee a false accusation.</li>
+        <li><b>A stack trace walks through whatever was linked in.</b> Frames naming OpenSSL or zlib are unverifiable, not fabricated. vulnvet learns your build root from the frames that <em>do</em> resolve, so it knows which frames are claiming your code.</li>
+        <li><b>Environment notes are not version claims.</b> "Tested on Ubuntu 22.04" is never checked against your release tags.</li>
+        <li><b>Prose is not code.</b> <code>use_after_free</code> is jargon, not a symbol; <code>Node.js</code> is a product, not a file.</li>
+        <li><b>Nothing is asserted beyond the evidence.</b> Search results are capped, so "appears only in documentation" is only said when the result list wasn't truncated — and anything a budget skipped is named, and blocks a clean grade.</li>
+      </ul>
+      <p style="margin-top:1.3rem">Escalating to "characteristic of fabricated reports" needs a pattern, not one slip. And the dossier carries this line every time it runs:</p>
+      <blockquote>vulnvet grounds a report's citations against the codebase; it does not judge the vulnerability logic itself, and it cannot tell who or what wrote the report. NOT FOUND means a specific cited detail does not exist at the checked revision — give the reporter a chance to correct an honest mistake before concluding fabrication.</blockquote>
+    </div>
+  </div>
+
+  <div class="section" id="install">
+    <div class="marker">Install</div>
+    <div class="body">
+      <h2>One command, no dependencies</h2>
+      <pre><span class="c"># from source, until it is on PyPI</span>
+git clone https://github.com/umeramin99/Open-Source
+cd Open-Source &amp;&amp; pip install -e .</pre>
+      <p>Python 3.9 or newer and <code>git</code> on your PATH. Nothing else — no network access, no accounts, no API keys. The same report and revision always produce the same dossier.</p>
+      <pre><span class="c"># the common case</span>
+vulnvet report.md --repo ~/src/myproject --rev 8.4.0
+
+<span class="c"># straight from a GitHub issue</span>
+gh issue view 1234 --json body -q .body | vulnvet - --repo .
+
+<span class="c"># a dossier to paste into the ticket</span>
+vulnvet report.md --repo . --format markdown -o dossier.md</pre>
+      <p>There is also a GitHub Action that vets reports as they arrive and posts the dossier as a comment, and a Python API if you are building your own triage flow.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="marker">Limits</div>
+    <div class="body">
+      <h2>What it cannot do</h2>
+      <p><b>It is not an AI detector.</b> It cannot tell you who wrote a report. A careful human can write an ungrounded one, and a fabricated one can cite real symbols.</p>
+      <p><b>It does not judge exploitability.</b> A perfectly grounded report can describe a non-issue. That judgement stays with you — a clean dossier means the citations are real and the report deserves a human read.</p>
+      <p><b>Some real code is invisible to a search.</b> curl genuinely builds <code>SSL_RSA_WITH_RC4_128_MD5</code> out of <code>SSL_##num_wo_prefix</code>, and no grep will find it. vulnvet flags that risk when it sees token pasting, but read the evidence line before acting.</p>
+      <p><b>Padding is narrowed, not solved.</b> Listing real filenames is free, so only claims that show the reporter read the code count toward a clean grade. Someone willing to cite genuinely real symbols around a false conclusion will still score well.</p>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<div class="wrap">
+  <footer>
+    <span>MIT licensed · no dependencies · 117 tests</span>
+    <span><a href="https://github.com/umeramin99/Open-Source">GitHub</a> · <a href="https://github.com/umeramin99/Open-Source/blob/main/SECURITY.md">Security policy</a> · <a href="https://github.com/umeramin99/Open-Source/blob/main/CONTRIBUTING.md">Contributing</a></span>
+  </footer>
+</div>
+
+<script>
+(function(){
+  var root=document.documentElement,key="vulnvet-theme",saved=null;
+  try{saved=localStorage.getItem(key)}catch(e){}
+  if(saved){root.setAttribute("data-theme",saved)}
+  document.getElementById("theme").addEventListener("click",function(){
+    var dark=getComputedStyle(root).getPropertyValue("--paper").trim().toLowerCase().indexOf("#1")===0;
+    var next=dark?"light":"dark";
+    root.setAttribute("data-theme",next);
+    try{localStorage.setItem(key,next)}catch(e){}
+  });
+
+  var REPORTS={
+    fab:{
+      file:"examples/curl-slop-report.md",
+      caption:"A reconstruction of the report shape that helped end curl's bounty. The cited function has never existed in curl.",
+      grade:"SEVERE GROUNDING FAILURES", gradeClass:"bad",
+      tally:[["1 verified","ok"],["2 not found","no"],["3 mismatched","mm"],["1 uncheckable","unk"]],
+      groups:[
+        {name:"Cited symbols",claims:[
+          {v:"ok",n:"nghttp3_conn_read_stream",w:"1 occurrence at curl-8_4_0 (e.g. lib/vquic/curl_ngtcp2.c:785)"}
+        ]},
+        {name:"Stack trace frames",claims:[
+          {v:"no",n:"ngtcp2_http3_handle_priority_frame",w:"file /src/curl/lib/vquic/ngtcp2.c not in the tree; function appears nowhere in the tree at curl-8_4_0"},
+          {v:"mm",n:"cf_ngtcp2_recv",w:"function appears at curl-8_4_0 (e.g. lib/vquic/curl_ngtcp2.c:1464); file /src/curl/lib/vquic/ngtcp2.c not in the tree"},
+          {v:"mm",n:"Curl_conn_recv",w:"file lib/cf-socket.c exists; line 912 is within it; but 'Curl_conn_recv' never appears in that file (found in lib/cfilters.c:168 instead)"}
+        ]},
+        {name:"Quoted code",claims:[
+          {v:"mm",n:"quoted source (7 lines sampled)",w:"only 1/7 sampled lines found at curl-8_4_0. Not found in the tree: static int ngtcp2_http3_handle_priority_frame(...); uint8_t prio_buf[64]; (+3 more)"}
+        ]},
+        {name:"File:line references",claims:[
+          {v:"no",n:"lib/vquic/ngtcp2.c:1042",w:"no such file anywhere in the tree at curl-8_4_0 — closest real file: lib/vquic/curl_ngtcp2.c"}
+        ]},
+        {name:"Version claims",claims:[
+          {v:"unk",n:"8.1.0 .. 8.4.0",w:"the checkout has too few version-like tags to check version claims against"}
+        ]}
+      ]
+    },
+    real:{
+      file:"examples/curl-grounded-report.md",
+      caption:"The counterpart, also shipped in the repo: a report whose every citation is real. Grounded does not mean correct — it means worth your time.",
+      grade:"FULLY GROUNDED", gradeClass:"good",
+      tally:[["6 verified","ok"],["0 not found","no"],["0 mismatched","mm"],["0 uncheckable","unk"]],
+      groups:[
+        {name:"Cited symbols",claims:[
+          {v:"ok",n:"dyn_nappend",w:"defined at lib/dynbuf.c:67; 4 occurrences at curl-8_4_0"},
+          {v:"ok",n:"Curl_dyn_addn",w:"defined at lib/dynbuf.c:164; 50+ occurrences at curl-8_4_0"},
+          {v:"ok",n:"SIZE_MAX",w:"8 occurrences at curl-8_4_0 (e.g. lib/vtls/bearssl.c:183)"}
+        ]},
+        {name:"Quoted code",claims:[
+          {v:"ok",n:"quoted source (3 lines sampled)",w:"all 3 sampled lines found verbatim at curl-8_4_0 (e.g. lib/dynbuf.c:70)"}
+        ]},
+        {name:"File:line references",claims:[
+          {v:"ok",n:"lib/dynbuf.c:67",w:"exists at curl-8_4_0 — reads: “static CURLcode dyn_nappend(struct dynbuf *s,”"},
+          {v:"ok",n:"lib/dynbuf.c:70",w:"exists at curl-8_4_0 — reads: “size_t indx = s->leng;”"}
+        ]}
+      ]
+    }
+  };
+  var LABEL={ok:"+ [VERIFIED   ]",no:"x [NOT FOUND  ]",mm:"~ [MISMATCH   ]",unk:"? [UNCHECKABLE]"};
+
+  var el=document.getElementById("dossier"),cap=document.getElementById("caption"),
+      tabF=document.getElementById("tab-fab"),tabR=document.getElementById("tab-real");
+
+  function esc(s){return s.replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c]})}
+
+  function render(key){
+    var r=REPORTS[key],h="",i=0;
+    h+='<div class="cmd">$ <b>vulnvet '+esc(r.file)+' --repo curl --rev 8.4.0</b></div>';
+    r.groups.forEach(function(g){
+      h+='<div class="group" style="animation-delay:'+(i++*36)+'ms">'+esc(g.name)+'</div>';
+      g.claims.forEach(function(c){
+        h+='<div class="claim '+c.v+'" style="animation-delay:'+(i++*36)+'ms">'+
+             '<div class="head"><span class="verdict">'+LABEL[c.v]+'</span>'+
+             '<span class="name">'+esc(c.n)+'</span></div>'+
+             '<div class="why">'+esc(c.w)+'</div></div>';
+      });
+    });
+    h+='<div class="tally">';
+    r.tally.forEach(function(t){h+='<span style="color:var(--v-'+t[1]+')">'+esc(t[0])+'</span>'});
+    h+='</div><div class="grade '+r.gradeClass+'">'+esc(r.grade)+'</div>';
+    el.innerHTML=h;
+    cap.textContent=r.caption;
+    tabF.setAttribute("aria-pressed",String(key==="fab"));
+    tabR.setAttribute("aria-pressed",String(key==="real"));
+  }
+  tabF.addEventListener("click",function(){render("fab")});
+  tabR.addEventListener("click",function(){render("real")});
+  render("fab");
+})();
+</script>
+</body>
+</html>

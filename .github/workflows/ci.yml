@@ -1,0 +1,85 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.11", "3.13"]
+        exclude:
+          # keep the matrix small: one Python per non-Linux OS
+          - os: macos-latest
+            python-version: "3.9"
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.9"
+          - os: windows-latest
+            python-version: "3.13"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e . pytest
+
+      - name: Test
+        run: python -m pytest -q
+
+  end-to-end:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Clone curl at a known tag
+        run: git clone --depth 1 --branch curl-8_4_0 https://github.com/curl/curl /tmp/curl
+
+      - name: The fabricated report must not ground
+        run: |
+          set -o pipefail
+          vulnvet examples/curl-slop-report.md --repo /tmp/curl --rev 8.4.0 \
+            --format json --exit-zero > result.json
+          python - <<'PY'
+          import json, sys
+          data = json.load(open("result.json"))
+          grade = data["assessment"]["grade"]
+          signals = data["counts"]["strong_signals"]
+          print(f"grade={grade} strong_signals={signals}")
+          if grade != "SEVERE GROUNDING FAILURES" or signals < 1:
+              sys.exit("expected the fabricated report to be flagged")
+          claims = {f["claim"]: f["verdict"] for f in data["findings"]}
+          if claims.get("ngtcp2_http3_handle_priority_frame") != "NOT_FOUND":
+              sys.exit("expected the fabricated symbol to be NOT_FOUND")
+          PY
+
+      - name: The grounded report must ground
+        run: |
+          vulnvet examples/curl-grounded-report.md --repo /tmp/curl --rev 8.4.0 \
+            --format json --exit-zero > grounded.json
+          python - <<'PY'
+          import json, sys
+          data = json.load(open("grounded.json"))
+          print(f"grade={data['assessment']['grade']}")
+          if data["counts"]["strong_signals"] != 0:
+              sys.exit("a grounded report must produce zero strong signals")
+          if data["counts"]["verified"] < 3:
+              sys.exit("expected the grounded report's citations to verify")
+          PY

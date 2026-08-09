@@ -1,0 +1,25 @@
+name: Something else is broken
+description: A crash, wrong output, packaging or platform problem
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The command you ran, and the report and repository if relevant.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Version and platform
+      description: "Output of `vulnvet --version`, your OS, and `git --version`."
+    validations:
+      required: true

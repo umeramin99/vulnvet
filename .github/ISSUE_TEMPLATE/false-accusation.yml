@@ -1,0 +1,51 @@
+name: vulnvet accused an honest report
+description: vulnvet reported NOT FOUND or MISMATCH on a citation that was actually fine
+labels: ["false-accusation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most valuable kind of report you can file. A tool that
+        cries fabrication at an honest reporter is worse than no tool, and
+        every one of these found so far has been a real design flaw rather
+        than a rough edge.
+
+  - type: textarea
+    id: report
+    attributes:
+      label: The report text
+      description: >-
+        Enough of it to reproduce. Redact anything sensitive — the wording
+        of the citation is what matters, not the vulnerability.
+      render: markdown
+    validations:
+      required: true
+
+  - type: input
+    id: repo
+    attributes:
+      label: Repository and revision
+      description: A public repository and tag makes this reproducible in one command.
+      placeholder: "https://github.com/curl/curl at curl-8_4_0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: got
+    attributes:
+      label: What vulnvet said
+      description: Paste the relevant part of the dossier, including the evidence line.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What it should have said, and why
+      description: >-
+        Which verdict was wrong, and what makes the citation legitimate —
+        a macro that builds the name, a generated file, a submodule, a
+        rename, anything a search cannot see.
+    validations:
+      required: true
