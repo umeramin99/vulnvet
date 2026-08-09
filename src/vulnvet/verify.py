@@ -207,6 +207,30 @@ class Verifier:
     def _verify_symbol(self, claim: Claim) -> Finding:
         name = claim.value
         hits = self.repo.grep_word(self.sha, name, excludes=self.excludes)
+        attributed = claim.extra.get("in_file")
+        if attributed and hits:
+            # The report said "X in file Y". A real symbol cited in a file
+            # it does not live in is a distinct, checkable error that
+            # grading the symbol and the file separately would miss.
+            resolved = self._resolve_path(attributed)
+            if resolved:
+                in_file = [h for h in hits if h[0] == resolved]
+                if not in_file:
+                    defn = self._definition_hit(name, hits)
+                    best = self._best_hit(hits)
+                    where = defn or f"{best[0]}:{best[1]}"
+                    return Finding(
+                        claim,
+                        Verdict.MISMATCH,
+                        f"'{name}' exists at {self.rev} "
+                        f"({'defined at ' if defn else 'e.g. '}{where}) but "
+                        f"never appears in {resolved}, where the report "
+                        f"places it",
+                        suggestion=(
+                            f"the report may mean {where.rsplit(':', 1)[0]}"
+                        ),
+                    )
+                hits = in_file
         if not hits and "::" in name:
             # Qualified C++ name: fall back to the method part.
             method = name.rsplit("::", 1)[-1]
@@ -260,10 +284,18 @@ class Verifier:
             f"(whole-word search across {len(self._tree)} files)",
         )
 
+    @classmethod
+    def _sample_hits(cls, hits) -> str:
+        best = cls._best_hit(hits)
+        return f"e.g. {best[0]}:{best[1]}"
+
     @staticmethod
-    def _sample_hits(hits) -> str:
-        first = hits[0]
-        return f"e.g. {first[0]}:{first[1]}"
+    def _best_hit(hits):
+        """The most useful hit to show a maintainer: source over docs."""
+        for hit in hits:
+            if not _is_doc_path(hit[0]):
+                return hit
+        return hits[0]
 
     @staticmethod
     def _definition_hit(name: str, hits) -> Optional[str]:

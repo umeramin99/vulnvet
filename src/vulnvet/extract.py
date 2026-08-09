@@ -11,7 +11,7 @@ something that was never a claim in the first place.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .claims import Claim, ClaimType
 from .stopwords import is_stopword
@@ -59,6 +59,17 @@ FUNC_CONTEXT_RE = re.compile(
     r"\b(?:function|method|routine|handler|api)\s+[`\"']?"
     r"([A-Za-z_][A-Za-z0-9_:.]*[A-Za-z0-9_])[`\"']?",
     re.IGNORECASE,
+)
+
+#: "`foo()` in `lib/bar.c`" - the report attributes a symbol to a file.
+#: Checking the pair together catches a real function name cited in a file
+#: it does not live in, which grading them separately would miss.
+ATTRIBUTION_RE = re.compile(
+    r"[`\"']?\b([A-Za-z_][A-Za-z0-9_:]*[A-Za-z0-9_])\b(?:\s*\(\s*\))?[`\"']?"
+    r"\s*(?:function\s+)?(?:is\s+)?(?:defined\s+|declared\s+|implemented\s+|"
+    r"located\s+|found\s+)?(?:in|of|from|inside|within|at)\s+"
+    r"(?:the\s+)?(?:file\s+)?[`\"']?"
+    r"((?:[A-Za-z0-9_.+-]+/)*[A-Za-z0-9_.+-]+\.(?:%s))\b" % SOURCE_EXTS,
 )
 
 VER = r"(\d+(?:\.\d+)+[a-z]?)"
@@ -329,10 +340,22 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
 
         line = _mask_all(raw, URL_RE)
 
-        # Inline code spans first; their contents are deliberate citations.
+        # Symbol-to-file attributions are read first, off the unmasked
+        # line, so both the inline-code pass and the prose pass below can
+        # attach them: "`foo()` in `lib/bar.c`" is one claim, not two.
+        attributed = {}
+        for m in ATTRIBUTION_RE.finditer(line.replace("`", " ")):
+            name, path = m.group(1), m.group(2).lstrip("./")
+            if not _looks_like_identifier(name):
+                continue
+            if path.lower() in PRODUCT_FILE_NAMES:
+                continue
+            attributed[name] = path
+
+        # Inline code spans next; their contents are deliberate citations.
         for m in INLINE_CODE_RE.finditer(line):
             span = m.group(1).strip()
-            _extract_from_code_span(span, lineno, context, add)
+            _extract_from_code_span(span, lineno, context, add, attributed)
         # Keep span text in place (minus backticks) so context patterns
         # like "affects `8.9.0`" still see the value.
         line = line.replace("`", " ")
@@ -453,26 +476,22 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
         # Symbols: explicit call syntax, "function X" phrasing, or
         # unambiguous multi-underscore identifiers.
         seen_here = set()
+        def add_symbol(name: str, style: str) -> None:
+            extra = {"style": style}
+            if name in attributed:
+                extra["in_file"] = attributed[name]
+            add(Claim(ClaimType.SYMBOL, name, lineno, context, "prose", extra))
+
         for m in PAREN_CALL_RE.finditer(line):
             name = m.group(1)
             if _looks_like_identifier(name) and name not in seen_here:
                 seen_here.add(name)
-                add(
-                    Claim(
-                        ClaimType.SYMBOL, name, lineno, context, "prose",
-                        {"style": "call"},
-                    )
-                )
+                add_symbol(name, "call")
         for m in FUNC_CONTEXT_RE.finditer(line):
             name = m.group(1).rstrip(".")
             if _looks_like_identifier(name) and name not in seen_here:
                 seen_here.add(name)
-                add(
-                    Claim(
-                        ClaimType.SYMBOL, name, lineno, context, "prose",
-                        {"style": "named"},
-                    )
-                )
+                add_symbol(name, "named")
         for m in SNAKE2_RE.finditer(line):
             name = m.group(1)
             if (
@@ -481,12 +500,14 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
                 and len(name) >= 8
             ):
                 seen_here.add(name)
-                add(
-                    Claim(
-                        ClaimType.SYMBOL, name, lineno, context, "prose",
-                        {"style": "bare"},
-                    )
-                )
+                add_symbol(name, "bare")
+        # A token the report itself places in a source file is a citation
+        # by declaration, so it clears the bar that bare prose tokens must
+        # meet ("checked_alloc is defined in lib/util.c").
+        for name in attributed:
+            if name not in seen_here:
+                seen_here.add(name)
+                add_symbol(name, "attributed")
 
     # ---- pass 3: code blocks ----------------------------------------------
     skipped_poc_blocks = 0
@@ -608,9 +629,17 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
 
 
 def _extract_from_code_span(
-    span: str, lineno: int, context: str, add
+    span: str, lineno: int, context: str, add, attributed=None
 ) -> None:
     """Claims from an inline `code span` - a deliberate citation."""
+    attributed = attributed or {}
+
+    def symbol_extra(name: str, style: str) -> Dict[str, Any]:
+        extra: Dict[str, Any] = {"style": style}
+        if name in attributed:
+            extra["in_file"] = attributed[name]
+        return extra
+
     if len(span) > 200:
         return
     fm = FILE_RE.fullmatch(span) or FILE_RE.fullmatch(span.rstrip("()"))
@@ -669,7 +698,7 @@ def _extract_from_code_span(
             add(
                 Claim(
                     ClaimType.SYMBOL, name, lineno, context, "inline-code",
-                    {"style": "span"},
+                    symbol_extra(name, "span"),
                 )
             )
         return
@@ -685,7 +714,7 @@ def _extract_from_code_span(
         add(
             Claim(
                 ClaimType.SYMBOL, name, lineno, context, "inline-code",
-                {"style": "span-call"},
+                symbol_extra(name, "span-call"),
             )
         )
         found += 1
@@ -699,7 +728,7 @@ def _extract_from_code_span(
         add(
             Claim(
                 ClaimType.SYMBOL, name, lineno, context, "inline-code",
-                {"style": "span-bare"},
+                symbol_extra(name, "span-bare"),
             )
         )
         found += 1

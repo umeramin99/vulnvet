@@ -281,3 +281,43 @@ def test_definition_site_prefers_source_over_docs(fixture_repo):
     f = v.verify(Claim(ClaimType.SYMBOL, "checked_alloc"))
     assert f.verdict is Verdict.VERIFIED
     assert "lib/util.c" in f.evidence
+
+
+def test_symbol_in_wrong_file_is_mismatch(fixture_repo):
+    v = make_verifier(fixture_repo)
+    f = v.verify(
+        Claim(
+            ClaimType.SYMBOL,
+            "parse_header_line",
+            extra={"style": "call", "in_file": "lib/util.c"},
+        )
+    )
+    assert f.verdict is Verdict.MISMATCH
+    assert "never appears in lib/util.c" in f.evidence
+    assert "src/http.c" in (f.suggestion or "")
+
+
+def test_symbol_in_right_file_is_verified(fixture_repo):
+    v = make_verifier(fixture_repo)
+    f = v.verify(
+        Claim(
+            ClaimType.SYMBOL,
+            "parse_header_line",
+            extra={"style": "call", "in_file": "src/http.c"},
+        )
+    )
+    assert f.verdict is Verdict.VERIFIED
+
+
+def test_attribution_to_nonexistent_file_does_not_change_symbol_verdict(fixture_repo):
+    # The bogus file gets its own NOT FOUND claim; the symbol itself is
+    # real and must not be penalized twice.
+    v = make_verifier(fixture_repo)
+    f = v.verify(
+        Claim(
+            ClaimType.SYMBOL,
+            "parse_header_line",
+            extra={"style": "call", "in_file": "does/not/exist.c"},
+        )
+    )
+    assert f.verdict is Verdict.VERIFIED
