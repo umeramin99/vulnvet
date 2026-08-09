@@ -38,15 +38,31 @@ jobs:
           fi
           echo "self-contained"
 
+      - name: Is Pages turned on?
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # A repository has Pages off until someone turns it on in
+        # Settings, and the workflow token is not allowed to do that for
+        # them ("Resource not accessible by integration"). Deploying is
+        # optional setup rather than part of the build, so report it and
+        # stop instead of leaving a red mark on main until someone
+        # notices.
+        run: |
+          if gh api "repos/${{ github.repository }}/pages" >/dev/null 2>&1; then
+            echo "on=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "on=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Pages is not enabled::Settings -> Pages, set Source to \"GitHub Actions\". The next push touching docs/ will deploy, or re-run this workflow."
+          fi
+
       - uses: actions/configure-pages@v5
-        with:
-          # Turn Pages on rather than requiring a trip to Settings.
-          # The first run on a repository where it is off would
-          # otherwise fail with "Get Pages site failed".
-          enablement: true
+        if: steps.pages.outputs.on == 'true'
       - uses: actions/upload-pages-artifact@v3
+        if: steps.pages.outputs.on == 'true'
         with:
           path: docs
 
       - id: deployment
+        if: steps.pages.outputs.on == 'true'
         uses: actions/deploy-pages@v4
