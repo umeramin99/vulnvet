@@ -251,3 +251,22 @@ lib/util.c:8 and README.md. One made-up name: `frobnicate_widget()`.
     dossier = vet(text, fixture_repo)
     assert len(dossier.strong_signals) == 1
     assert dossier.assessment().grade == "PARTIAL GROUNDING"
+
+
+SUBMODULE_REPORT = """\
+The bug is in `dep_parse_header()` in `third_party/dep/src/parser.c`,
+specifically at third_party/dep/src/parser.c:2, and the file
+third_party/dep/src/parser.c is vendored.
+"""
+
+
+def test_submodule_citations_are_unverifiable_not_false(submodule_repo):
+    """A submodule's contents are not in this repository. Citing a file
+    inside one is something vulnvet cannot check, not something wrong."""
+    dossier = vet(SUBMODULE_REPORT, submodule_repo, rev="HEAD")
+    assert dossier.findings, "expected claims to be extracted"
+    for finding in dossier.findings:
+        assert finding.verdict is Verdict.UNCHECKABLE, finding
+        assert "submodule" in finding.evidence
+    assert dossier.count(Verdict.NOT_FOUND) == 0
+    assert dossier.strong_signals == []
