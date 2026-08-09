@@ -240,3 +240,25 @@ $ ./configure --with-openssl && make
     claims, _ = extract_claims(text)
     assert not claims_of(claims, ClaimType.QUOTED_CODE)
     assert not claims_of(claims, ClaimType.FILE)
+
+
+def test_symbol_attributed_to_file():
+    text = "The function `parse_header_line()` in `src/http.c` is unbounded."
+    claims, _ = extract_claims(text)
+    sym = next(c for c in claims_of(claims, ClaimType.SYMBOL))
+    assert sym.value == "parse_header_line"
+    assert sym.extra.get("in_file") == "src/http.c"
+
+
+def test_attribution_in_plain_prose():
+    text = "checked_alloc is defined in lib/util.c and never validates size."
+    claims, _ = extract_claims(text)
+    syms = {c.value: c.extra.get("in_file") for c in claims_of(claims, ClaimType.SYMBOL)}
+    assert syms.get("checked_alloc") == "lib/util.c"
+
+
+def test_attribution_ignores_product_paths():
+    text = "The handler `render_component()` in Vue.js breaks."
+    claims, _ = extract_claims(text)
+    syms = claims_of(claims, ClaimType.SYMBOL)
+    assert all(c.extra.get("in_file") is None for c in syms)
