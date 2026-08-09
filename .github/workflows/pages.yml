@@ -1,0 +1,47 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# Only one deploy at a time; let a newer commit finish rather than queueing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the page is self-contained
+        # The site must not depend on a CDN staying up, and must not leak
+        # a visitor's request to a third party.
+        run: |
+          if grep -nE '(src|href)="https?://' docs/index.html \
+             | grep -v 'github\.com'; then
+            echo "docs/index.html loads an external resource" >&2
+            exit 1
+          fi
+          echo "self-contained"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
