@@ -186,6 +186,18 @@ MAX_LINE_DIGITS = 9
 #: base64), not citations, and scanning them only costs time.
 MAX_PROSE_LINE = 2000
 
+#: Claim types kept first when the budget bites: these are the ones
+#: that require having read the code, and so the ones an attacker
+#: most wants pushed off the end of the list.
+_PRIORITY_TYPES = frozenset(
+    {
+        ClaimType.SYMBOL,
+        ClaimType.STACK_FRAME,
+        ClaimType.QUOTED_CODE,
+        ClaimType.FILE_LINE,
+    }
+)
+
 
 #: Words that can precede a version without naming a different product.
 _VERSION_FILLER = frozenset(
@@ -315,9 +327,14 @@ def _quote_candidate_lines(lines: List[str]) -> List[str]:
         if re.fullmatch(r"[{}()\[\];,\s]*", stripped):
             continue
         candidates.append(stripped)
-    # Longest lines are the most distinctive quotes to test.
-    candidates.sort(key=len, reverse=True)
-    return candidates[:MAX_QUOTE_LINES]
+    if len(candidates) <= MAX_QUOTE_LINES:
+        return candidates
+    # Sample for coverage, not for distinctiveness. Picking the longest
+    # lines let an attacker paste a genuine excerpt with one short
+    # fabricated line inserted - the payload line is exactly the one a
+    # longest-first sample drops, and the block then scored 8/8.
+    step = len(candidates) / MAX_QUOTE_LINES
+    return [candidates[int(i * step)] for i in range(MAX_QUOTE_LINES)]
 
 
 #: Filenames a reporter gives their own attachment. A block headed
@@ -368,8 +385,16 @@ def _unwrap_blockquotes(lines: List[str]) -> Tuple[List[str], bool]:
     return [BLOCKQUOTE_RE.sub("", l) for l in lines], True
 
 
-def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
-    """Return (claims, notes) extracted from the report text."""
+def extract_claims(
+    text: str, stats: Optional[Dict[str, Any]] = None
+) -> Tuple[List[Claim], List[str]]:
+    """Return (claims, notes) extracted from the report text.
+
+    Pass a dict as *stats* to also receive coverage details, notably
+    ``dropped``: claims the budget prevented us from checking. A
+    caller that grades the report must not call it fully grounded
+    while anything is in there.
+    """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = text.split("\n")
     lines, unwrapped = _unwrap_blockquotes(lines)
@@ -705,14 +730,28 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
         ]
         preceding_text = " ".join(preceding[-3:])
         hint = _first_line_path_hint(block)
-        # A PoC veto is absolute. A leading "# poc.py" comment used to
-        # override it, which graded the reporter's own exploit script
-        # against the tree - where it is guaranteed not to exist - and
-        # reported that as a fabrication signal.
-        if POC_MARKERS_RE.search(preceding_text):
+        says_poc = bool(POC_MARKERS_RE.search(preceding_text))
+        says_quote = bool(QUOTE_MARKERS_RE.search(preceding_text))
+        if says_poc and (says_quote or hint is not None):
+            # The lead-in calls the block both things. Never grade it -
+            # it may be the reporter's own code - but never silently drop
+            # it either, or one incidental "patch" hides an invented
+            # "vulnerable source" block from the dossier entirely.
+            add(
+                Claim(
+                    ClaimType.QUOTED_CODE,
+                    f"code block at line {block.start_line} (not graded)",
+                    block.start_line,
+                    preceding_text.strip()[:160] or context,
+                    "code-block",
+                    {"lines": [], "hint_path": hint, "origin": "ambiguous"},
+                )
+            )
+            continue
+        if says_poc:
             skipped_poc_blocks += 1
             continue
-        if not QUOTE_MARKERS_RE.search(preceding_text) and hint is None:
+        if not says_quote and hint is None:
             skipped_poc_blocks += 1
             continue
 
@@ -753,13 +792,54 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
 
     # ---- pass 4: dedupe and prune -----------------------------------------
     claims = _dedupe(claims)
-    if len(claims) > MAX_CLAIMS:
-        notes.append(
-            f"Report yielded {len(claims)} claims; only the first "
-            f"{MAX_CLAIMS} were kept."
+    claims, dropped = _apply_budget(claims)
+    if dropped:
+        summary = ", ".join(
+            f"{count} {ctype.value}" for ctype, count in sorted(
+                dropped.items(), key=lambda kv: -kv[1]
+            )
         )
-        claims = claims[:MAX_CLAIMS]
+        notes.append(
+            f"The report exceeded the {MAX_CLAIMS}-claim budget; "
+            f"{sum(dropped.values())} claim(s) were not checked "
+            f"({summary}). This dossier does not speak to them."
+        )
+    if stats is not None:
+        stats["dropped"] = {c.value: n for c, n in dropped.items()}
     return claims, notes
+
+
+def _apply_budget(claims: List[Claim]) -> Tuple[List[Claim], Dict[ClaimType, int]]:
+    """Trim to the budget without discarding the evidence that matters.
+
+    Truncating in document order was a complete bypass: prose is parsed
+    before code blocks, so quoted code and trace frames always sat at the
+    tail. Pasting a directory listing above them pushed every fabricated
+    claim past the cap, and the report graded FULLY GROUNDED because the
+    fabrications were deleted before anything looked at them.
+
+    Claims that require having read the code are kept first; the cheap,
+    numerous ones give up their slots.
+    """
+    if len(claims) <= MAX_CLAIMS:
+        return claims, {}
+
+    priority = [c for c in claims if c.type in _PRIORITY_TYPES]
+    rest = [c for c in claims if c.type not in _PRIORITY_TYPES]
+
+    priority_kept = priority[:MAX_CLAIMS]
+    room = MAX_CLAIMS - len(priority_kept)
+    rest_kept = rest[:room]
+    kept = priority_kept + rest_kept
+
+    dropped: Dict[ClaimType, int] = {}
+    for claim in priority[len(priority_kept):] + rest[len(rest_kept):]:
+        dropped[claim.type] = dropped.get(claim.type, 0) + 1
+
+    # Restore document order among what survived.
+    order = {id(c): i for i, c in enumerate(claims)}
+    kept.sort(key=lambda c: order[id(c)])
+    return kept, dropped
 
 
 def _extract_from_code_span(
@@ -885,9 +965,14 @@ def _dedupe(claims: List[Claim]) -> List[Claim]:
     file_line_paths = {
         c.extra.get("path") for c in out if c.type is ClaimType.FILE_LINE
     }
-    # A SYMBOL claim is redundant when a stack frame checks the same name.
+    # A SYMBOL claim is redundant only when a stack frame will actually
+    # be graded for the same name. A pathless frame grades UNCHECKABLE,
+    # so pruning on it would let one frame-shaped line launder every
+    # fabricated symbol in the report into "cannot tell".
     frame_funcs = {
-        c.extra.get("function") for c in out if c.type is ClaimType.STACK_FRAME
+        c.extra.get("function")
+        for c in out
+        if c.type is ClaimType.STACK_FRAME and c.extra.get("path")
     }
     pruned = []
     for claim in out:

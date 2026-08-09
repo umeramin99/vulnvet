@@ -141,6 +141,11 @@ class Dossier:
     findings: List[Finding] = field(default_factory=list)
     #: Non-fatal notes about the run (rev fallbacks, skipped content, ...).
     notes: List[str] = field(default_factory=list)
+    #: Claims the extraction budget prevented us from checking, by type.
+    #: While this is non-empty the dossier cannot certify the report:
+    #: "every checkable claim corresponds to the codebase" is false when
+    #: some claims were never looked at.
+    dropped: Dict[str, int] = field(default_factory=dict)
 
     def count(self, verdict: Verdict) -> int:
         return sum(1 for f in self.findings if f.verdict is verdict)
@@ -171,6 +176,24 @@ class Dossier:
         mismatch = self.count(Verdict.MISMATCH)
         strong = len(self.strong_signals)
 
+        if self.dropped and not (not_found or mismatch):
+            total = sum(self.dropped.values())
+            kinds = ", ".join(
+                f"{n} {k}" for k, n in sorted(
+                    self.dropped.items(), key=lambda kv: -kv[1]
+                )
+            )
+            return Assessment(
+                grade="COVERAGE INCOMPLETE",
+                summary=(
+                    f"Everything checked corresponds to the codebase, but "
+                    f"{total} claim(s) were never checked because the report "
+                    f"exceeded the extraction budget ({kinds}). This dossier "
+                    "does not speak to them, so it cannot tell you the "
+                    "report is sound - a report padded past the budget is "
+                    "itself worth a second look."
+                ),
+            )
         if not self.findings:
             return Assessment(
                 grade="NO CHECKABLE CLAIMS",
@@ -231,13 +254,21 @@ class Dossier:
                     "read the per-claim evidence before judging."
                 ),
             )
-        if verified == 0:
+        # "Fully grounded" has to mean something was actually checked.
+        # A report whose only successes are file paths, with its code
+        # left ungraded, has not been vetted - saying otherwise would
+        # certify exactly the blocks nobody looked at.
+        if verified == 0 or (
+            self.substantive_verified == 0 and self.count(Verdict.UNCHECKABLE)
+        ):
             return Assessment(
                 grade="UNCHECKABLE",
                 summary=(
-                    "Claims were extracted but none could be verified "
-                    "against the repository (see per-claim notes). Treat "
-                    "the report as unvetted."
+                    "Nothing in this report could be checked against the "
+                    "code itself - what verified was file paths and "
+                    "metadata, not anything showing the reporter read the "
+                    "source. Read the per-claim notes; treat the report as "
+                    "unvetted."
                 ),
             )
         return Assessment(
