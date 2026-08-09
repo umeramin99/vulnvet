@@ -69,11 +69,21 @@ class Verifier:
         #: report file itself, when it lives inside the repo: a report must
         #: never corroborate itself.
         self.excludes = list(exclude_paths or [])
+        #: Build-time directory prefixes this project was compiled under,
+        #: learned from stack frames that do resolve into the tree.
+        self.build_roots: set = set()
         self._tree = repo.tree_files(rev)
         self._tree_set = set(self._tree)
         self._basenames: dict = {}
+        # Directory suffixes of at least two components. One component is
+        # useless as evidence: nearly every project has a "lib" or "src",
+        # so a dependency's own lib/ would otherwise read as a claim on us.
+        self._dirs = set()
         for path in self._tree:
             self._basenames.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+            parts = path.split("/")[:-1]
+            for i in range(max(0, len(parts) - 1)):
+                self._dirs.add("/".join(parts[i:]))
 
     # ------------------------------------------------------------ dispatch
 
@@ -351,17 +361,44 @@ class Verifier:
         # no better than not appearing at all.
         docs_only = _only_in_docs(func_hits_anywhere)
 
-        problems = []
-        goods = []
-        if path:
-            if resolved:
-                goods.append(f"file {resolved} exists")
-            elif self._is_external_path(path):
+        # A stack trace walks through whatever code was linked in, so most
+        # frames legitimately name files this repository has never
+        # contained. vulnvet can only speak to this tree, so a frame is
+        # graded only when it claims to be inside it. Note that the
+        # function merely appearing here is not such a claim: curl calls
+        # nghttp2_session_mem_recv(), but a frame inside nghttp2's own
+        # source is still nghttp2's frame, not curl's.
+        if path and not resolved:
+            if self._is_external_path(path):
                 return Finding(
                     claim, Verdict.UNCHECKABLE,
                     f"frame points into an external/system source file "
                     f"({path}), not this tree",
                 )
+            if not self._frame_claims_this_tree(path):
+                return Finding(
+                    claim, Verdict.UNCHECKABLE,
+                    f"frame names a file outside this tree "
+                    f"({path}) whose directory does not correspond to any "
+                    f"in the repository at {self.rev} - most likely a "
+                    f"dependency or system library vulnvet cannot see",
+                )
+        if not path and not func_hits_anywhere:
+            # No file to anchor on and a name we do not have: this could
+            # be a fabrication or a frame from any linked library. Say so
+            # rather than guess.
+            return Finding(
+                claim, Verdict.UNCHECKABLE,
+                f"function '{func}' does not appear in this tree at "
+                f"{self.rev} and the frame names no file, so it cannot be "
+                f"told apart from a frame in a dependency",
+            )
+
+        problems = []
+        goods = []
+        if path:
+            if resolved:
+                goods.append(f"file {resolved} exists")
             else:
                 problems.append(f"file {path} not in the tree")
         if docs_only:
@@ -396,6 +433,45 @@ class Verifier:
         if not func_hits_anywhere:
             return Finding(claim, Verdict.NOT_FOUND, evidence)
         return Finding(claim, Verdict.MISMATCH, evidence)
+
+    def learn_build_roots(self, frame_paths) -> None:
+        """Infer where this project was compiled, from frames that resolve.
+
+        A trace's frames carry absolute build paths. The ones that land in
+        this tree reveal the prefix the project was built under - given
+        ``/home/build/curl/lib/http2.c`` resolving to ``lib/http2.c``, the
+        root is ``/home/build/curl/``. Any other frame sharing that root
+        is this project's code; a frame under ``/home/build/openssl/`` is
+        not, however similar the two look.
+        """
+        for path in frame_paths:
+            if not path:
+                continue
+            resolved = self._resolve_path(path)
+            if not resolved:
+                continue
+            normalized = path.replace("\\", "/")
+            if normalized.endswith(resolved):
+                root = normalized[: -len(resolved)]
+                if root not in ("", "/"):
+                    self.build_roots.add(root)
+
+    def _frame_claims_this_tree(self, path: Optional[str]) -> bool:
+        """Does this frame's path assert that it is inside this project?"""
+        if not path:
+            return False
+        normalized = path.replace("\\", "/")
+        if any(normalized.startswith(root) for root in self.build_roots):
+            return True
+        # Without a learned build root, fall back to structural evidence:
+        # a directory suffix of two or more components that this tree
+        # really has (curl's "lib/vquic"), or a file of the same name.
+        # One component is worthless - nearly every project has a "lib".
+        parts = normalized.strip("/").split("/")[:-1]
+        for i in range(max(0, len(parts) - 1)):
+            if "/".join(parts[i:]) in self._dirs:
+                return True
+        return normalized.rsplit("/", 1)[-1] in self._basenames
 
     @staticmethod
     def _is_external_path(path: str) -> bool:
@@ -627,6 +703,11 @@ def build_dossier(
             f"{excludes[0]} was excluded from corroboration searches"
         )
     verifier = Verifier(repo, sha, display=rev_name, exclude_paths=excludes)
+    verifier.learn_build_roots(
+        c.extra.get("path")
+        for c in claims
+        if c.type is ClaimType.STACK_FRAME
+    )
     findings = [verifier.verify(c) for c in claims]
     return Dossier(
         report_path=report_path,

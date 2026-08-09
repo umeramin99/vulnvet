@@ -243,6 +243,15 @@ def _quote_candidate_lines(lines: List[str]) -> List[str]:
     return candidates[:MAX_QUOTE_LINES]
 
 
+#: Filenames a reporter gives their own attachment. A block headed
+#: "# poc.py" is the reporter's script, not a quote from the codebase.
+POC_FILENAME_RE = re.compile(
+    r"^(?:poc|pocs|exploit|repro|reproducer|reproduce|trigger|crash|test_?poc|"
+    r"attack|payload|fuzz|harness|solve|pwn|demo)\b",
+    re.IGNORECASE,
+)
+
+
 def _first_line_path_hint(block: _Block) -> Optional[str]:
     """A leading comment like ``// lib/http.c`` names the quoted file."""
     for raw in block.lines[:2]:
@@ -250,8 +259,12 @@ def _first_line_path_hint(block: _Block) -> Optional[str]:
         if not stripped.startswith(("//", "#", "/*", "*", ";")):
             continue
         m = FILE_RE.search(stripped)
-        if m:
-            return m.group(1)
+        if not m:
+            continue
+        path = m.group(1)
+        if POC_FILENAME_RE.match(path.rsplit("/", 1)[-1]):
+            return None
+        return path
     return None
 
 
@@ -585,9 +598,14 @@ def extract_claims(text: str) -> Tuple[List[Claim], List[str]]:
         ]
         preceding_text = " ".join(preceding[-3:])
         hint = _first_line_path_hint(block)
-        is_quote = bool(QUOTE_MARKERS_RE.search(preceding_text)) or hint is not None
-        is_poc = bool(POC_MARKERS_RE.search(preceding_text))
-        if not is_quote or (is_poc and not hint):
+        # A PoC veto is absolute. A leading "# poc.py" comment used to
+        # override it, which graded the reporter's own exploit script
+        # against the tree - where it is guaranteed not to exist - and
+        # reported that as a fabrication signal.
+        if POC_MARKERS_RE.search(preceding_text):
+            skipped_poc_blocks += 1
+            continue
+        if not QUOTE_MARKERS_RE.search(preceding_text) and hint is None:
             skipped_poc_blocks += 1
             continue
 
