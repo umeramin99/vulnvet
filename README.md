@@ -62,10 +62,16 @@ A tool that cries fabrication at an honest reporter is worse than no tool. Every
 
 - Reporter-supplied PoC and exploit code is **never** graded against the tree — only blocks the report claims are quoting *from* the codebase.
 - Prose that merely looks like an identifier isn't extracted. `use_after_free` is vulnerability jargon, not a symbol; `Node.js` is a product, not a file.
-- Stack frames pointing into libc, sanitizer runtimes, or system headers grade UNCHECKABLE, not NOT FOUND.
-- A quoted snippet with fewer than three distinctive lines is too small to grade fairly.
+- **A stack trace walks through whatever was linked in.** Frames naming OpenSSL, zlib or libc source are UNCHECKABLE, not fabricated. vulnvet works out which frames claim *your* code by learning the build root from the frames that do resolve: given `/home/build/curl/lib/http2.c` resolving to `lib/http2.c`, anything else under `/home/build/curl/` is yours and `/home/build/openssl/…` is not.
+- A quoted snippet with fewer than three distinctive lines is too small to grade fairly, and code pasted with line-number gutters is de-guttered before matching.
+- Versions attributed to something else ("tested on Ubuntu 22.04") aren't checked against your release tags. Neither are version claims in a repo with no tags.
+- Paths inside submodules, and files a suggested-fix patch proposes to *create*, are not citations of things that should already exist.
+- In a codebase that uses `##` token pasting, a missing symbol carries a caveat: the preprocessor can build identifiers that never appear literally.
 - If the report file itself lives inside the repo, it's excluded from searches — a report must never corroborate itself.
-- If a repository has no version tags, version claims are UNCHECKABLE rather than "no such version".
+
+Escalation to "characteristic of fabricated reports" needs a *pattern*: either several fabricated citations, or failures clearly outweighing what the report got right. One bad citation among many good ones is a correction to ask for, not an accusation.
+
+The regression suite for exactly this is [`tests/test_false_accusation.py`](tests/test_false_accusation.py) — each test is a report a real person could plausibly file, asserting that vulnvet doesn't accuse them.
 
 And the dossier says this out loud, every time:
 
@@ -178,11 +184,14 @@ for finding in dossier.strong_signals:
 
 ## Limitations worth knowing
 
-- **Macro-generated and code-generated symbols** may not appear as literal text in the tree, so a legitimate citation can grade NOT FOUND. Check the evidence line before acting.
+- **Macro-generated and code-generated symbols** may not appear as literal text in the tree, so a legitimate citation can grade NOT FOUND. curl really does build `SSL_RSA_WITH_RC4_128_MD5` out of `SSL_##num_wo_prefix`, and no grep will find it. vulnvet flags the risk when it sees `##` in the tree, but check the evidence line before acting.
 - **Grep-level symbol checking** doesn't distinguish a definition from a comment mentioning the name. Where vulnvet can spot a definition it says so.
-- **Reformatted quotes** — a reporter who re-indents or line-wraps code they copied will score lower on the quoted-code check than one who pastes verbatim.
+- **Reformatted quotes** — a reporter who re-indents or line-wraps code they copied will score lower on the quoted-code check than one who pastes verbatim. That lands on MISMATCH, never on a fabrication signal.
 - **Shallow clones** hide tags and old commits; vulnvet says "shallow or tagless clone?" rather than pretending. Use `fetch-depth: 0` in CI.
+- **Search results are capped** at 50 hits per query, so evidence lines say "50+" rather than an exact count, and vulnvet won't assert "only in documentation" off a truncated list.
 - A determined fabricator who pads a report with real symbols can raise their verified count. The dossier shows per-claim evidence precisely so the count alone is never the answer.
+
+vulnvet also treats the report as hostile input, because it is: report text can't reach `git` as a command-line option, can't inject ANSI escapes into the dossier to forge verdict lines, can't corrupt the markdown table, and can't hang the tool. Those properties have tests that fail when the guard is removed.
 
 ## Contributing
 
