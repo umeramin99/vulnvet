@@ -206,6 +206,12 @@ class Verifier:
         path = claim.extra["path"]
         line = claim.extra["line"]
         resolved = self._resolve_path(path)
+        if not resolved and self._inside_submodule(path):
+            return Finding(
+                claim, Verdict.UNCHECKABLE,
+                f"path lies inside a submodule, whose contents are not "
+                f"stored in this repository at {self.rev}",
+            )
         if not resolved:
             suggested = self._suggest_path(path)
             if suggested and suggested[1]:
@@ -249,6 +255,13 @@ class Verifier:
         name = claim.value
         hits = self.repo.grep_word(self.sha, name, excludes=self.excludes)
         attributed = claim.extra.get("in_file")
+        if not hits and attributed and self._inside_submodule(attributed):
+            return Finding(
+                claim, Verdict.UNCHECKABLE,
+                f"the report places this symbol in {attributed}, which lies "
+                f"inside a submodule whose contents are not stored in this "
+                f"repository at {self.rev}",
+            )
         if attributed and hits:
             # The report said "X in file Y". A real symbol cited in a file
             # it does not live in is a distinct, checkable error that

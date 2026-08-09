@@ -95,3 +95,36 @@ def fixture_head_sha(fixture_repo):
         text=True,
     )
     return out.stdout.strip()
+
+
+@pytest.fixture(scope="session")
+def submodule_repo(tmp_path_factory):
+    """A superproject with a real gitlink, for submodule-aware checks."""
+    base = tmp_path_factory.mktemp("submodule-case")
+    dep = base / "dep"
+    dep.mkdir()
+    git(dep, "init", "-q")
+    git(dep, "config", "user.email", "test@example.invalid")
+    git(dep, "config", "user.name", "Test")
+    (dep / "src").mkdir()
+    (dep / "src" / "parser.c").write_text(
+        "int dep_parse_header(char *b)\n{\n    return 0;\n}\n"
+    )
+    git(dep, "add", "-A")
+    git(dep, "commit", "-q", "-m", "dep")
+
+    main = base / "main"
+    main.mkdir()
+    git(main, "init", "-q")
+    git(main, "config", "user.email", "test@example.invalid")
+    git(main, "config", "user.name", "Test")
+    (main / "app.c").write_text("int main(void) { return 0; }\n")
+    git(main, "add", "-A")
+    git(main, "commit", "-q", "-m", "init")
+    git(
+        main, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(dep), "third_party/dep",
+    )
+    git(main, "add", "-A")
+    git(main, "commit", "-q", "-m", "add submodule")
+    return str(main)
