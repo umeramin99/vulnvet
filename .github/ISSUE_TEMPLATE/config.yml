@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue in vulnvet itself
+    url: https://github.com/umeramin99/Open-Source/security/advisories/new
+    about: >-
+      Report text escaping the sandbox - reaching git as an option, injecting
+      escape sequences into the dossier, hanging the tool. See SECURITY.md.

@@ -1,0 +1,149 @@
+name: vulnvet
+description: >-
+  Ground a vulnerability report's claims against the actual codebase and emit
+  an evidence dossier.
+author: vulnvet contributors
+branding:
+  icon: shield
+  color: red
+
+inputs:
+  report:
+    description: >-
+      The report text itself (e.g. ${{ github.event.issue.body }}). Mutually
+      exclusive with report-path.
+    required: false
+    default: ""
+  report-path:
+    description: Path to a report file, relative to the workspace.
+    required: false
+    default: ""
+  repo:
+    description: Path to the checkout to verify against.
+    required: false
+    default: "."
+  rev:
+    description: >-
+      Revision the report claims to be about - a tag, branch, SHA, or bare
+      version like 8.4.0. Defaults to the checked-out HEAD.
+    required: false
+    default: ""
+  dossier-path:
+    description: Where to write the markdown dossier.
+    required: false
+    default: vulnvet-dossier.md
+  fail-on-ungrounded:
+    description: >-
+      Fail the step when any claim comes back NOT FOUND or MISMATCH. Default
+      false - the dossier is usually the deliverable, not a gate.
+    required: false
+    default: "false"
+
+outputs:
+  grade:
+    description: >-
+      Overall assessment: FULLY GROUNDED, PARTIAL GROUNDING, SEVERE GROUNDING
+      FAILURES, UNCHECKABLE, or NO CHECKABLE CLAIMS.
+    value: ${{ steps.run.outputs.grade }}
+  strong-signals:
+    description: Count of fabricated symbols/frames/quoted code.
+    value: ${{ steps.run.outputs.strong-signals }}
+  not-found:
+    description: Count of NOT FOUND claims.
+    value: ${{ steps.run.outputs.not-found }}
+  mismatch:
+    description: Count of MISMATCH claims.
+    value: ${{ steps.run.outputs.mismatch }}
+  verified:
+    description: Count of VERIFIED claims.
+    value: ${{ steps.run.outputs.verified }}
+  dossier-path:
+    description: Path to the written markdown dossier.
+    value: ${{ steps.run.outputs.dossier-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install vulnvet
+      shell: bash
+      run: pip install --quiet "${{ github.action_path }}"
+
+    - name: Vet the report
+      id: run
+      shell: bash
+      # Report text is untrusted and arrives via the environment, never
+      # interpolated into this script: an issue body containing shell
+      # metacharacters must not be able to run commands here.
+      env:
+        VULNVET_REPORT: ${{ inputs.report }}
+        VULNVET_REPORT_PATH: ${{ inputs.report-path }}
+        VULNVET_REPO: ${{ inputs.repo }}
+        VULNVET_REV: ${{ inputs.rev }}
+        VULNVET_DOSSIER: ${{ inputs.dossier-path }}
+        VULNVET_FAIL: ${{ inputs.fail-on-ungrounded }}
+      run: |
+        set -euo pipefail
+
+        if [ -n "$VULNVET_REPORT_PATH" ]; then
+          report_file="$VULNVET_REPORT_PATH"
+        elif [ -n "$VULNVET_REPORT" ]; then
+          report_file="$(mktemp)"
+          printf '%s' "$VULNVET_REPORT" > "$report_file"
+        else
+          echo "vulnvet: provide either 'report' or 'report-path'" >&2
+          exit 2
+        fi
+
+        args=(--repo "$VULNVET_REPO")
+        if [ -n "$VULNVET_REV" ]; then
+          args+=(--rev "$VULNVET_REV")
+        fi
+
+        # JSON drives the outputs; markdown is the human deliverable. Both
+        # runs are pure reads, so running twice is cheap and keeps parsing
+        # out of the shell.
+        vulnvet "$report_file" "${args[@]}" --format json --exit-zero > vulnvet.json
+        vulnvet "$report_file" "${args[@]}" --format markdown --exit-zero \
+          -o "$VULNVET_DOSSIER"
+
+        python - <<'PY' >> "$GITHUB_OUTPUT"
+        import json, os, re
+
+        with open("vulnvet.json") as fh:
+            data = json.load(fh)
+        counts = data["counts"]
+
+
+        NEWLINES = re.compile(r"[\r\n]+")
+
+
+        def emit(key, value):
+            # A newline in a value would end the key=value record and let
+            # the rest be read as further outputs. None of these values
+            # can contain one today; keep it that way regardless.
+            flattened = NEWLINES.sub(" ", str(value))
+            print(key + "=" + flattened)
+
+
+        emit("grade", data["assessment"]["grade"])
+        emit("strong-signals", counts["strong_signals"])
+        emit("not-found", counts["not_found"])
+        emit("mismatch", counts["mismatch"])
+        emit("verified", counts["verified"])
+        emit("dossier-path", os.environ["VULNVET_DOSSIER"])
+        PY
+
+        cat "$VULNVET_DOSSIER" >> "$GITHUB_STEP_SUMMARY"
+
+        if [ "$VULNVET_FAIL" = "true" ]; then
+          ungrounded=$(python -c "import json;d=json.load(open('vulnvet.json'));print(d['counts']['not_found']+d['counts']['mismatch'])")
+          if [ "$ungrounded" -gt 0 ]; then
+            echo "vulnvet: $ungrounded claim(s) failed to ground" >&2
+            exit 1
+          fi
+        fi
