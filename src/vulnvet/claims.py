@@ -69,6 +69,20 @@ STRONG_SIGNAL_TYPES = frozenset(
     {ClaimType.SYMBOL, ClaimType.STACK_FRAME, ClaimType.QUOTED_CODE}
 )
 
+#: Claim types whose VERIFIED verdict means the reporter demonstrably read
+#: the code. Naming a real file path, a real release or a real CVE proves
+#: only that they can read a directory listing, so those must not count
+#: toward "this report is well grounded" - otherwise anyone can defuse the
+#: escalation rule by padding a fabricated report with true trivia.
+SUBSTANTIVE_TYPES = frozenset(
+    {
+        ClaimType.SYMBOL,
+        ClaimType.STACK_FRAME,
+        ClaimType.QUOTED_CODE,
+        ClaimType.FILE_LINE,
+    }
+)
+
 
 @dataclass
 class Claim:
@@ -136,6 +150,16 @@ class Dossier:
         return [f for f in self.findings if f.is_strong_signal]
 
     @property
+    def substantive_verified(self) -> int:
+        """Verified claims that required reading the code, not listing it."""
+        return sum(
+            1
+            for f in self.findings
+            if f.verdict is Verdict.VERIFIED
+            and f.claim.type in SUBSTANTIVE_TYPES
+        )
+
+    @property
     def checkable(self) -> int:
         return sum(
             1 for f in self.findings if f.verdict is not Verdict.UNCHECKABLE
@@ -159,9 +183,11 @@ class Dossier:
             )
         # One fabricated citation among many that check out is a
         # correction to ask for, not a pattern. Escalate on repetition, or
-        # when failures clearly outweigh what the report got right.
+        # when failures clearly outweigh what the report got right - where
+        # "got right" counts only claims that show the reporter read the
+        # code, so a list of real filenames cannot buy its way out.
         failures = not_found + mismatch
-        if strong >= 2 or (strong >= 1 and failures >= max(2, 2 * verified)):
+        if strong >= 2 or (strong >= 1 and failures >= max(2, 2 * self.substantive_verified)):
             count_phrase = (
                 "Multiple cited technical details do not exist"
                 if failures > 1
@@ -181,9 +207,22 @@ class Dossier:
             opening = (
                 "Some claims check out and some do not."
                 if verified
-                else "No claim checked out, though none is a strong "
-                "fabrication signal on its own."
+                else "No claim checked out."
             )
+            # A fabricated citation must never be buried by a favourable
+            # ratio: padding a report with true trivia is cheap, so the
+            # summary names the strong signal even when the grade does not
+            # escalate.
+            if strong:
+                named = ", ".join(
+                    f"'{f.claim.value}'" for f in self.strong_signals[:3]
+                )
+                opening += (
+                    f" Note that {named} "
+                    f"{'does' if strong == 1 else 'do'} not exist in the "
+                    "codebase at all, which the rest of the report checking "
+                    "out does not explain away."
+                )
             return Assessment(
                 grade="PARTIAL GROUNDING",
                 summary=(
