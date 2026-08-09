@@ -1,6 +1,13 @@
 # vulnvet
 
+[![ci](https://github.com/umeramin99/Open-Source/actions/workflows/ci.yml/badge.svg)](https://github.com/umeramin99/Open-Source/actions/workflows/ci.yml)
+[![python](https://img.shields.io/badge/python-3.9%2B-1f6f8b)](https://github.com/umeramin99/Open-Source/blob/main/pyproject.toml)
+[![dependencies](https://img.shields.io/badge/dependencies-none-1f6f8b)](https://github.com/umeramin99/Open-Source/blob/main/pyproject.toml)
+[![license](https://img.shields.io/badge/license-MIT-1f6f8b)](https://github.com/umeramin99/Open-Source/blob/main/LICENSE)
+
 **Ground a vulnerability report's claims against the actual codebase — before you spend hours triaging it.**
+
+📄 **[umeramin99.github.io/Open-Source](https://umeramin99.github.io/Open-Source/)** — what it does, with a real dossier you can flip between a fabricated and an honest report.
 
 You get a report. It's confident, well-formatted, and cites `ngtcp2_http3_handle_priority_frame()` in `lib/vquic/ngtcp2.c:1042`. Disproving it means checking out the right tag, grepping for the function, opening the file, counting lines, checking whether those versions ever existed.
 

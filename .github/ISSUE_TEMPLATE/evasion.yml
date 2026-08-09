@@ -1,0 +1,49 @@
+name: A fabricated report got through
+description: vulnvet cleared a report whose citations are invented
+labels: ["evasion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read [SECURITY.md](../blob/main/SECURITY.md) first. Evading
+        detection is a limitation rather than a vulnerability in vulnvet,
+        so this belongs here as a normal issue — but it is still worth
+        reporting, and fixes land in `tests/test_evasion.py`.
+
+        One case is out of scope by design: a report that cites genuinely
+        real symbols around a false conclusion will score well. vulnvet
+        checks whether citations exist, not whether a bug is real.
+
+  - type: textarea
+    id: report
+    attributes:
+      label: The fabricated report
+      description: The text that should have been caught.
+      render: markdown
+    validations:
+      required: true
+
+  - type: input
+    id: repo
+    attributes:
+      label: Repository and revision
+      placeholder: "https://github.com/curl/curl at curl-8_4_0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: got
+    attributes:
+      label: What vulnvet said
+      description: The grade and counts, plus any relevant per-claim lines.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: mechanism
+    attributes:
+      label: Why it worked, if you know
+      description: >-
+        Which check was avoided or neutralised. Not required — a
+        reproduction is enough.
