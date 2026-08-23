@@ -31,8 +31,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/umeramin99/Open-Source"
-Issues = "https://github.com/umeramin99/Open-Source/issues"
+Homepage = "https://github.com/umeramin99/vulnvet"
+Issues = "https://github.com/umeramin99/vulnvet/issues"
 
 [project.scripts]
 vulnvet = "vulnvet.cli:main"
