@@ -316,8 +316,8 @@ footer a{color:var(--ink-soft)}
     <div class="marker">Why</div>
     <div class="body">
       <h2>Disproving one sentence costs an hour</h2>
-      <p>In January 2026 curl ended its six-year bug bounty, its maintainer describing the volume of AI-generated reports as feeling like a denial-of-service attack. The Python Software Foundation's security developer-in-residence documented the same load across CPython, pip and urllib3. The Jazzband collective — 84 projects, roughly 150 million downloads a month — shut down citing AI spam.</p>
-      <p>Every countermeasure so far has been policy: honour-system checkboxes, closing the bounty, banning reporters. But the expensive part was never the policy. It was checking out the right tag, grepping for a function that turns out never to have existed, opening a file to count its lines, and working out whether those version numbers were ever released.</p>
+      <p>In January 2026 curl ended its six-year bug bounty, its maintainer writing that the project was “effectively being DDoSed” by AI-generated reports. The Python Software Foundation's security developer-in-residence documented the same load across CPython, pip, urllib3 and Requests. In March 2026 the Jazzband collective — 84 projects, over 150 million downloads a month — announced it was winding down, citing a flood of AI-generated spam pull requests.</p>
+      <p>Most countermeasures so far have been policy: honour-system checkboxes, closing the bounty, banning reporters. But the expensive part was never the policy. It was checking out the right tag, grepping for a function that turns out never to have existed, opening a file to count its lines, and working out whether those version numbers were ever released.</p>
       <p>That step is mechanical. vulnvet does it in about a second, and nothing more.</p>
     </div>
   </div>
@@ -430,7 +430,7 @@ vulnvet report.md --repo . --format markdown -o dossier.md</pre>
   var REPORTS={
     fab:{
       file:"examples/curl-slop-report.md",
-      caption:"A reconstruction of the report shape that helped end curl's bounty. The cited function has never existed in curl.",
+      caption:"A fictional report in the genre that flooded curl's bounty. The cited function has never existed in curl.",
       grade:"SEVERE GROUNDING FAILURES", gradeClass:"bad",
       tally:[["1 verified","ok"],["2 not found","no"],["3 mismatched","mm"],["1 uncheckable","unk"]],
       groups:[

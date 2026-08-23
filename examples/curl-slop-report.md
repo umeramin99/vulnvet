@@ -1,10 +1,12 @@
 # Buffer overflow in curl's HTTP/3 priority frame handling (WebSocket upgrade path)
 
-> This example reconstructs the *shape* of the infamous AI-fabricated report
-> against curl (HackerOne #2199174, October 2023) - the report that helped
-> push curl's maintainers toward ending their bug bounty. The wording is
-> ours; the fabricated technical claims mirror the original. Run it against
-> a curl checkout:
+> **This is a fictional report. It describes no real vulnerability, and no
+> real person wrote it.** Every technical detail below is invented for
+> testing: the function, the file, the line numbers and the stack trace do
+> not exist in curl at any version. It imitates the *genre* of AI-generated
+> report that curl's security team described receiving for years before
+> [ending the bug bounty](https://daniel.haxx.se/blog/2026/01/26/the-end-of-the-curl-bug-bounty/).
+> Run it against a curl checkout:
 >
 > ```console
 > $ git clone --depth 1 --branch curl-8_4_0 https://github.com/curl/curl
