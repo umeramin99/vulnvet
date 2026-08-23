@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability in vulnvet
 
-Open a [GitHub security advisory](https://github.com/umeramin99/Open-Source/security/advisories/new),
+Open a [GitHub security advisory](https://github.com/umeramin99/vulnvet/security/advisories/new),
 or a public issue if you judge the problem low risk.
 
 Please include the report text, the repository and revision, and what

@@ -14,6 +14,7 @@ import re
 from typing import List, Optional, Tuple
 
 from .claims import Claim, ClaimType, Dossier, Finding, Verdict
+from .extract import POC_FILENAME_RE
 from .gitrepo import MAX_GREP_HITS, GitError, Repo, _normalize_version_text
 
 
@@ -38,6 +39,23 @@ _SOURCE_EXTS = (
 )
 
 
+#: Build, packaging and CI files. These are not source in the
+#: compiler's sense, but build-time injection and workflow script
+#: injection are real vulnerability classes, and a report about one
+#: cites exactly these files - so a symbol living only here is the
+#: subject of the report, not a leftover mention of deleted code.
+_BUILD_EXTS = (
+    ".cmake", ".mk", ".mak", ".am", ".ac", ".m4", ".bzl", ".bazel",
+    ".gradle", ".yml", ".yaml",
+)
+
+#: The same files that carry no extension to recognise them by.
+_BUILD_BASENAMES = (
+    "makefile", "gnumakefile", "cmakelists.txt", "configure",
+    "dockerfile", "meson.build", "justfile",
+)
+
+
 def _is_source_path(path: str) -> bool:
     """Does a hit here mean the symbol is in code the project ships?
 
@@ -47,8 +65,17 @@ def _is_source_path(path: str) -> bool:
     symbol it has ever had, including deleted ones. Treating those as
     source let removed functions grade VERIFIED and get reported as
     "defined at RELEASE-NOTES:123".
+
+    Build and CI files count as code here: a Makefile recipe or a
+    workflow step is what a build-injection report is about.
     """
-    return path.lower().endswith(_SOURCE_EXTS)
+    lower = path.lower()
+    if lower.endswith(_SOURCE_EXTS) or lower.endswith(_BUILD_EXTS):
+        return True
+    # Makefile, configure and friends have no extension to match on,
+    # and CMakeLists.txt has one that reads as prose, so the name
+    # itself has to be consulted.
+    return lower.rsplit("/", 1)[-1] in _BUILD_BASENAMES
 
 
 def _is_doc_path(path: str) -> bool:
@@ -75,6 +102,17 @@ def _is_bare_document(path: str) -> bool:
     almost always the reporter naming an attachment.
     """
     return "/" not in path and path.lower().endswith(_DOC_EXTS)
+
+
+def _is_bare_poc_attachment(path: str) -> bool:
+    """A directory-less PoC filename, e.g. ``poc.py`` or ``exploit.py``.
+
+    "I have attached poc.py" names the reporter's own script. That is
+    not a citation of the codebase, so the tree cannot answer it - and
+    the same filenames the extractor already refuses to grade as
+    quoted source decide it here.
+    """
+    return "/" not in path and bool(POC_FILENAME_RE.match(path))
 
 
 class Verifier:
@@ -224,6 +262,12 @@ class Verifier:
                 "reads as a reference to an attached document rather than a "
                 "path in the repository",
             )
+        if resolved is None and _is_bare_poc_attachment(path):
+            return Finding(
+                claim, Verdict.UNCHECKABLE,
+                "reads as a reference to an attached file - the reporter's "
+                "own proof of concept - rather than a path in the repository",
+            )
         if resolved:
             note = "" if resolved == path else f" (as {resolved})"
             return Finding(
@@ -259,6 +303,22 @@ class Verifier:
                 claim, Verdict.UNCHECKABLE,
                 f"path lies inside a submodule, whose contents are not "
                 f"stored in this repository at {self.rev}",
+            )
+        # A line number does not turn an attachment into a repository path:
+        # "poc.py:42" is still the reporter's own file. _verify_file already
+        # declines to grade these, and disagreeing with it inside one dossier
+        # would be worse than either answer alone.
+        if not resolved and _is_bare_document(path):
+            return Finding(
+                claim, Verdict.UNCHECKABLE,
+                "reads as a reference to an attached document rather than a "
+                "path in the repository",
+            )
+        if not resolved and _is_bare_poc_attachment(path):
+            return Finding(
+                claim, Verdict.UNCHECKABLE,
+                "reads as a reference to an attached file - the reporter's "
+                "own proof of concept - rather than a path in the repository",
             )
         if not resolved:
             suggested = self._suggest_path(path)
@@ -734,14 +794,18 @@ class Verifier:
         role = claim.extra.get("role", "mentioned")
         if role == "range":
             start, end = claim.extra["start"], claim.extra["end"]
-            missing = [v for v in (start, end) if not self._version_known(v, tag_map)]
+            missing = [
+                v for v in (start, end)
+                if not self._version_known(v, tag_map)
+                and not self._series_tags(v, tag_map)
+            ]
             inverted = self._version_tuple(start) > self._version_tuple(end)
             if not missing and not inverted:
                 return Finding(
                     claim, Verdict.VERIFIED,
                     f"both endpoints match released tags "
-                    f"({tag_map.get(_normalize_version_text(start) or start)}"
-                    f" .. {tag_map.get(_normalize_version_text(end) or end)})",
+                    f"({self._tag_for(start, tag_map)}"
+                    f" .. {self._tag_for(end, tag_map)})",
                 )
             problems = []
             if missing:
@@ -762,6 +826,13 @@ class Verifier:
             return Finding(
                 claim, Verdict.VERIFIED,
                 f"matches release tag {tag}",
+            )
+        series = self._series_tags(version, tag_map)
+        if series:
+            return Finding(
+                claim, Verdict.VERIFIED,
+                f"names a released series rather than a single tag "
+                f"({', '.join(series)})",
             )
         near = self._nearest_versions(version, tag_map)
         return Finding(
@@ -803,6 +874,34 @@ class Verifier:
     def _version_known(version: str, tag_map) -> bool:
         norm = _normalize_version_text(version) or version
         return norm in tag_map
+
+    @classmethod
+    def _tag_for(cls, version: str, tag_map) -> str:
+        """The tag(s) to name in evidence for a version the repo has."""
+        exact = tag_map.get(_normalize_version_text(version) or version)
+        if exact:
+            return exact
+        return ", ".join(cls._series_tags(version, tag_map)) or version
+
+    @staticmethod
+    def _series_tags(version: str, tag_map) -> List[str]:
+        """Tags in the release series a shorter version names.
+
+        "affects version 1.0" is how people refer to the 1.0 line; the
+        tag is v1.0.0. Reporting that no release matches would accuse
+        an honest reporter over a convention. The prefix has to end on
+        a component boundary, so 1.0 does not reach 1.10.2.
+        """
+        # Not the "or version" fallback the exact check uses: a string
+        # with no dotted core names no series, and "1" must not prefix
+        # every 1.x tag in the repository.
+        norm = _normalize_version_text(version)
+        if not norm:
+            return []
+        return sorted(
+            tag for released, tag in tag_map.items()
+            if released.startswith(norm + ".")
+        )
 
     @staticmethod
     def _version_tuple(version: str):
