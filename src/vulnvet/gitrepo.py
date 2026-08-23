@@ -29,6 +29,21 @@ class NotARepository(GitError):
 #: Cap on grep hits we bother collecting for any single query.
 MAX_GREP_HITS = 50
 
+#: Longest search string we will hand to git. A needle comes straight
+#: from the report, and the kernel rejects the whole exec once a single
+#: argv element passes its limit (E2BIG, ~128 KB). 8192 characters stays
+#: four times clear of that even for astral text, so a pasted minified
+#: line never reaches the boundary in the first place.
+MAX_NEEDLE_CHARS = 8192
+
+#: Bounds on the per-repository blob cache. One file is read several
+#: times over a dossier - its line count, then a cited line, then the
+#: next claim in it - and every miss is another `git show` process. The
+#: character budget keeps a report citing many large files from holding
+#: the tree in memory.
+MAX_BLOB_CACHE = 64
+MAX_BLOB_CACHE_CHARS = 4_000_000
+
 
 def _normalize_version_text(text: str) -> str:
     """Reduce a tag or version string to a comparable dotted core.
@@ -44,11 +59,36 @@ def _normalize_version_text(text: str) -> str:
     return match.group(1).replace("_", ".").replace("-", ".")
 
 
+def _prepare_needle(needle: str) -> str:
+    """Make a report-supplied search string safe to hand to execve.
+
+    A NUL byte cannot survive in an argv element at all, and a single
+    element past the kernel's limit fails the whole exec. Dropping the
+    NUL costs nothing - it could not occur in a line ``git grep -I``
+    would match either, so the search only becomes more likely to
+    corroborate the reporter. An over-long needle is refused rather than
+    truncated: a verdict reached on a prefix nobody quoted would be an
+    accusation dressed up as a check, and GitError grades the claim
+    UNCHECKABLE instead.
+    """
+    needle = needle.replace("\0", "")
+    if len(needle) > MAX_NEEDLE_CHARS:
+        raise GitError(
+            f"the report quotes a {len(needle)}-character search term, past "
+            f"the {MAX_NEEDLE_CHARS}-character limit git can be given"
+        )
+    return needle
+
+
 class Repo:
     def __init__(self, path: str):
         self.path = path
         self._tree_cache: Dict[str, List[str]] = {}
         self._submodule_cache: Dict[str, List[str]] = {}
+        # Keyed on (rev, path) and held on the instance, so it can neither
+        # answer for the wrong revision nor leak between repositories.
+        self._blob_cache: Dict[Tuple[str, str], Optional[str]] = {}
+        self._blob_chars = 0
         self._tags: Optional[List[str]] = None
         try:
             out = self._run("rev-parse", "--is-inside-work-tree")
@@ -74,10 +114,17 @@ class Repo:
 
     # ------------------------------------------------------------------ util
 
-    def _run(self, *args: str, check: bool = True) -> str:
+    def _spawn(self, *args: str) -> subprocess.CompletedProcess:
+        """Run git under a timeout and hand back the completed process.
+
+        Every git call goes through here, so none can hang and none can
+        escape as a raw traceback. Callers that need to tell a failed
+        command apart from one that printed nothing use this directly;
+        everything else uses _run.
+        """
         cmd = ["git", "-C", self.path, *args]
         try:
-            proc = subprocess.run(
+            return subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -89,6 +136,17 @@ class Repo:
             raise GitError("git executable not found on PATH") from exc
         except subprocess.TimeoutExpired as exc:
             raise GitError(f"git command timed out: {' '.join(args[:3])}") from exc
+        except (OSError, ValueError) as exc:
+            # Report text becomes argv, so it can carry a NUL byte
+            # (ValueError) or overrun the kernel's argv limit (E2BIG).
+            # Neither is a verdict about the reporter: as a GitError it
+            # grades UNCHECKABLE instead of killing the run.
+            raise GitError(
+                f"git {' '.join(args[:3])} could not be run: {exc}"
+            ) from exc
+
+    def _run(self, *args: str, check: bool = True) -> str:
+        proc = self._spawn(*args)
         if check and proc.returncode != 0:
             raise GitError(
                 f"git {' '.join(args[:3])} failed: {proc.stderr.strip()[:200]}"
@@ -105,13 +163,8 @@ class Repo:
         ``curl-8_9_0``, ``release-8.9.0``, ...).
         """
         for candidate in self._rev_candidates(rev):
-            proc = subprocess.run(
-                ["git", "-C", self.path, "rev-parse", "--verify", "--quiet",
-                 candidate + "^{commit}"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+            proc = self._spawn(
+                "rev-parse", "--verify", "--quiet", candidate + "^{commit}"
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 return proc.stdout.strip()
@@ -164,16 +217,27 @@ class Repo:
         return path in set(self.tree_files(rev))
 
     def read_file(self, rev: str, path: str) -> Optional[str]:
-        proc = subprocess.run(
-            ["git", "-C", self.path, "show", f"{rev}:{path}"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if proc.returncode != 0:
-            return None
-        return proc.stdout
+        key = (rev, path)
+        if key in self._blob_cache:
+            return self._blob_cache[key]
+        proc = self._spawn("show", f"{rev}:{path}")
+        content = proc.stdout if proc.returncode == 0 else None
+        self._cache_blob(key, content)
+        return content
+
+    def _cache_blob(self, key: Tuple[str, str], content: Optional[str]) -> None:
+        """Remember a blob, evicting oldest-first to stay inside both bounds."""
+        if content is not None and len(content) > MAX_BLOB_CACHE_CHARS:
+            return  # one outsized file is cheaper to re-read than to hold
+        self._blob_cache[key] = content
+        self._blob_chars += len(content or "")
+        while (
+            len(self._blob_cache) > MAX_BLOB_CACHE
+            or self._blob_chars > MAX_BLOB_CACHE_CHARS
+        ):
+            # dicts keep insertion order, so this is the oldest entry
+            oldest = next(iter(self._blob_cache))
+            self._blob_chars -= len(self._blob_cache.pop(oldest) or "")
 
     @staticmethod
     def _split_lines(content: str) -> List[str]:
@@ -210,6 +274,7 @@ class Repo:
         ignore_case: bool = False, excludes: Optional[List[str]] = None,
     ) -> List[Tuple[str, int, str]]:
         """Whole-word occurrences of *word* at *rev*: (path, line, text)."""
+        word = _prepare_needle(word)
         args = ["grep", "-n", "-w", "-I", "-z"]
         if ignore_case:
             args.append("-i")
@@ -224,6 +289,7 @@ class Repo:
         self, rev: str, needle: str, excludes: Optional[List[str]] = None,
     ) -> List[Tuple[str, int, str]]:
         """Exact fixed-string occurrences of *needle* anywhere at *rev*."""
+        needle = _prepare_needle(needle)
         args = ["grep", "-n", "-I", "-z", "--fixed-strings", "-e", needle, rev]
         pathspecs = self._pathspecs(None, excludes)
         if pathspecs:
@@ -295,14 +361,7 @@ class Repo:
 
     def commit_exists(self, ref: str) -> Optional[str]:
         """Return the subject line if *ref* resolves to a commit."""
-        proc = subprocess.run(
-            ["git", "-C", self.path, "log", "-1", "--format=%H %s",
-             ref, "--"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        proc = self._spawn("log", "-1", "--format=%H %s", ref, "--")
         if proc.returncode != 0 or not proc.stdout.strip():
             return None
         return proc.stdout.strip()
