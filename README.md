@@ -35,11 +35,11 @@ That's a real run against a real curl checkout. The cited function has never exi
 
 ## Why this exists
 
-In January 2026 curl [ended its bug bounty](https://daniel.haxx.se/blog/) after six years, with Daniel Stenberg describing the volume of AI-generated reports as feeling like a DDoS. The Python Software Foundation's security developer-in-residence [documented the same pattern](https://sethmlarson.dev/) across CPython, pip, and urllib3. The Jazzband collective — 84 Python projects, ~150M monthly downloads — shut down in March 2026 citing AI spam volume.
+In January 2026 curl [ended its bug bounty](https://daniel.haxx.se/blog/2026/01/26/the-end-of-the-curl-bug-bounty/) after six years, with Daniel Stenberg writing that the project was "effectively being DDoSed" by AI-generated reports. The Python Software Foundation's security developer-in-residence [documented the same pattern](https://sethmlarson.dev/slop-security-reports) across CPython, pip, urllib3 and Requests. In March 2026 the Jazzband collective — 84 Python projects, over 150M monthly downloads — [announced it was winding down](https://jazzband.co/news/2026/03/14/sunsetting-jazzband), citing a flood of AI-generated spam pull requests.
 
-The countermeasures so far have been *policy*: honor-system checkboxes, closing the bounty, banning reporters. The expensive part was never the policy — it was the minutes-to-hours each maintainer burns proving that a specific confident-sounding citation refers to code that does not exist.
+Most countermeasures have been *policy*: honor-system checkboxes, closing the bounty, banning reporters. The technical ones aim elsewhere — [honeyslop](https://github.com/gadievron/honeyslop) plants canaries in your tree so slop scanners incriminate themselves, and [anti-slop](https://github.com/peakoss/anti-slop) scores pull requests on contributor heuristics. Both are good, and both leave the same step to you: the minutes-to-hours each maintainer burns proving that a specific confident-sounding citation refers to code that does not exist.
 
-That specific step is mechanical, and nothing open source did it. vulnvet does exactly that step, and nothing more.
+That step is mechanical. vulnvet does exactly that step, and nothing more.
 
 ## What it checks
 
@@ -120,11 +120,11 @@ $ vulnvet report.md --repo . --format json | jq '.counts.strong_signals'
 
 `--rev` accepts a tag, branch, SHA, or a bare version like `8.4.0` — it's matched against your tags, so `curl-8_4_0`, `v8.4.0`, and `release-8.4.0` all resolve. Omit it and vulnvet checks HEAD and says so.
 
-Exit codes: `0` everything checkable grounded · `1` at least one NOT FOUND or MISMATCH · `2` usage error. Use `--exit-zero` to always exit 0.
+Exit codes: `0` everything checkable grounded · `1` at least one NOT FOUND or MISMATCH · `2` usage error. Use `--exit-zero` to exit 0 even when claims fail to ground (usage errors still exit 2).
 
 ### Try it on the curl example
 
-The repo ships a reconstruction of the report shape that helped end curl's bounty:
+The repo ships a fictional report in the genre that flooded curl's bounty:
 
 ```console
 $ git clone --depth 1 --branch curl-8_4_0 https://github.com/curl/curl /tmp/curl
@@ -201,6 +201,25 @@ for finding in dossier.strong_signals:
 [`tests/test_evasion.py`](tests/test_evasion.py) pins the evasions that used to work — padding past the claim budget to delete the fabricated claims, a `vendor/…/` prefix on a real path, a build directory named `libcurl` passing as libc, a pathless stack frame laundering an invented symbol, the word "patch" deleting a self-declared source quote, and one short fabricated line hiding inside a genuine excerpt.
 
 vulnvet also treats the report as hostile input, because it is: report text can't reach `git` as a command-line option, can't inject ANSI escapes into the dossier to forge verdict lines, can't corrupt the markdown table, and can't hang the tool. Those properties have tests that fail when the guard is removed.
+
+## How this was built
+
+Most of this repository was written by an AI coding agent working under my
+direction and review. The commit trailers say so, and I would rather tell you
+here than have you find it there.
+
+On this project the disclosure matters, so here is the part that actually
+answers it: **vulnvet never calls a model.** Every verdict is a grep, a
+`git show`, or a line count. The same report at the same revision always
+produces the same dossier, and each verdict prints the evidence it came from,
+so you can re-derive any of them by hand in seconds. A tool for catching
+unverifiable claims would be a poor joke if you had to take its own on faith.
+
+The constraints it was built under — fail toward `UNCHECKABLE`, never accuse on
+a single bad citation, never grade the reporter's own code — are written down in
+[`CONTRIBUTING.md`](CONTRIBUTING.md), and enforced in
+[`tests/test_false_accusation.py`](tests/test_false_accusation.py) and
+[`tests/test_evasion.py`](tests/test_evasion.py).
 
 ## Contributing
 
