@@ -38,6 +38,13 @@ FILE_RE = re.compile(
     + r"(?::(\d+))?(?!\.?\w)"
 )
 
+#: ``./lib/http.c`` names the same file as ``lib/http.c``, and that prefix
+#: is the only decoration a citation carries. Stripping it with
+#: ``lstrip("./")`` removed a character *set* instead: it turned
+#: ``.github/workflows/ci.yml`` into a path no tree has ever contained, and
+#: quietly rebased ``../src/http.c`` onto the repository root.
+LEADING_DOT_SLASH_RE = re.compile(r"^(?:\./)+")
+
 #: Famous "X.js"-style product names that read as file paths in prose.
 PRODUCT_FILE_NAMES = frozenset(
     {
@@ -53,6 +60,13 @@ CVE_RE = re.compile(r"\bCVE-(\d{4})-(\d{4,7})\b", re.IGNORECASE)
 
 COMMIT_CONTEXT_RE = re.compile(r"\bcommits?\s+`?([0-9a-f]{7,40})\b", re.IGNORECASE)
 COMMIT_BARE_RE = re.compile(r"\b([0-9a-f]{40})\b")
+
+#: A word that says a nearby hex span is a revision rather than a number.
+COMMIT_WORD_RE = re.compile(
+    r"\b(?:commits?|sha1?s?|revs?|revisions?|hash(?:es)?)\b", re.IGNORECASE
+)
+#: How much text either side of a span still counts as "near" it.
+COMMIT_CONTEXT_CHARS = 48
 
 INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 
@@ -141,8 +155,9 @@ FRAME_GDB_RE = re.compile(
 
 #: CommonMark allows any info string after the opening fence
 #: (```c title="x", ```{.c}), and a closing fence must be at least
-#: as long as the opener and carry no info string.
-FENCE_RE = re.compile(r"^(`{3,}|~{3,})[ \t]*(\S*)[^`]*$")
+#: as long as the opener and carry no info string. The pattern matches
+#: the opener only; ``_fence_match`` checks the rest of the line.
+FENCE_RE = re.compile(r"^(`{3,}|~{3,})[ \t]*(\S*)")
 
 DIFF_FILE_RE = re.compile(r"^(?:\+\+\+|---)\s+(?:[ab]/)?(\S+)")
 
@@ -236,6 +251,37 @@ def _safe_line(text: Optional[str]) -> Optional[int]:
         return None
     value = int(text)
     return value if value > 0 else None
+
+
+def _tree_relative_path(value: str) -> Optional[str]:
+    """The path a citation names relative to the repository root, or None.
+
+    None means the citation climbs above the root ("../src/http.c"): it
+    is written relative to a directory the report never gave us, so the
+    tree can neither confirm nor refute it. Dropping it is the only
+    honest answer available here - rebasing it onto the root corroborates
+    a path the repository does not have, and grading it against the root
+    accuses the reporter of inventing one.
+    """
+    path = LEADING_DOT_SLASH_RE.sub("", value)
+    if ".." in path.split("/"):
+        return None
+    return path
+
+
+def _fence_match(line: str) -> Optional["re.Match"]:
+    """The code fence opening *line*, or None if it does not open one.
+
+    A backtick after the info string means the line is prose containing
+    inline code, not a fence. That check lives here rather than in a
+    trailing ``[^`]*$`` because the regex form backtracked quadratically:
+    a single 100 KB line took ~23 seconds, and this pass runs before the
+    MAX_PROSE_LINE guard that treats over-long lines as data.
+    """
+    m = FENCE_RE.match(line)
+    if m is None or "`" in line[m.end():]:
+        return None
+    return m
 
 
 def _mask(line: str, match: "re.Match") -> str:
@@ -421,7 +467,7 @@ def extract_claims(
         qm = BLOCKQUOTE_RE.match(line)
         depth = len(qm.group(0).replace(" ", "")) if qm else 0
         body = line[qm.end():] if qm else line
-        fence = FENCE_RE.match(body.strip())
+        fence = _fence_match(body.strip())
 
         if current is None and fence:
             fence_marker = fence.group(1)[0]
@@ -473,8 +519,8 @@ def extract_claims(
         # attach them: "`foo()` in `lib/bar.c`" is one claim, not two.
         attributed = {}
         for m in ATTRIBUTION_RE.finditer(line.replace("`", " ")):
-            name, path = m.group(1), m.group(2).lstrip("./")
-            if not _looks_like_identifier(name):
+            name, path = m.group(1), _tree_relative_path(m.group(2))
+            if path is None or not _looks_like_identifier(name):
                 continue
             if path.lower() in PRODUCT_FILE_NAMES:
                 continue
@@ -483,7 +529,11 @@ def extract_claims(
         # Inline code spans next; their contents are deliberate citations.
         for m in INLINE_CODE_RE.finditer(line):
             span = m.group(1).strip()
-            _extract_from_code_span(span, lineno, context, add, attributed)
+            # The prose around a span is what tells a commit hash apart
+            # from a fill pattern of the same shape.
+            near_start = max(0, m.start() - COMMIT_CONTEXT_CHARS)
+            near = line[near_start:m.end() + COMMIT_CONTEXT_CHARS]
+            _extract_from_code_span(span, lineno, context, add, attributed, near)
         # Keep span text in place (minus backticks) so context patterns
         # like "affects `8.9.0`" still see the value.
         line = line.replace("`", " ")
@@ -586,7 +636,9 @@ def extract_claims(
 
         # File paths (with optional :line).
         for m in FILE_RE.finditer(line):
-            path = m.group(1).lstrip("./")
+            path = _tree_relative_path(m.group(1))
+            if path is None:
+                continue
             for prefix in ("a/", "b/"):
                 if path.startswith(prefix):
                     path = path[len(prefix):]
@@ -766,7 +818,9 @@ def extract_claims(
                     break
                 fmatch = FILE_RE.search(_mask_all(t, URL_RE))
                 if fmatch:
-                    hint = fmatch.group(1).lstrip("./")
+                    # A traversal path names no file we can grade, so the
+                    # block keeps its "no hint" state rather than a wrong one.
+                    hint = _tree_relative_path(fmatch.group(1))
                     break
         add(
             Claim(
@@ -843,7 +897,8 @@ def _apply_budget(claims: List[Claim]) -> Tuple[List[Claim], Dict[ClaimType, int
 
 
 def _extract_from_code_span(
-    span: str, lineno: int, context: str, add, attributed=None
+    span: str, lineno: int, context: str, add, attributed=None,
+    near_text: str = "",
 ) -> None:
     """Claims from an inline `code span` - a deliberate citation."""
     attributed = attributed or {}
@@ -858,8 +913,8 @@ def _extract_from_code_span(
         return
     fm = FILE_RE.fullmatch(span) or FILE_RE.fullmatch(span.rstrip("()"))
     if fm:
-        path = fm.group(1).lstrip("./")
-        if path.lower() in PRODUCT_FILE_NAMES:
+        path = _tree_relative_path(fm.group(1))
+        if path is None or path.lower() in PRODUCT_FILE_NAMES:
             return
         span_line = _safe_line(fm.group(2))
         if span_line is not None:
@@ -891,7 +946,19 @@ def _extract_from_code_span(
         )
         return
     if re.fullmatch(r"[0-9a-f]{7,40}", span):
-        add(Claim(ClaimType.COMMIT, span.lower(), lineno, context, "inline-code"))
+        # Hex shape alone is not a commit citation: `41414141` is a fill
+        # pattern, `16777216` is a size, and a 32-character span is as
+        # likely the MD5 of the PoC attachment. Length and letters do not
+        # separate them, so require the report to say what it is citing -
+        # "no commit with this hash exists" is an accusation about a claim
+        # the reporter never made.
+        if COMMIT_WORD_RE.search(near_text):
+            add(
+                Claim(
+                    ClaimType.COMMIT, span.lower(), lineno, context,
+                    "inline-code",
+                )
+            )
         return
     if re.fullmatch(r"v?\d+(?:\.\d+)+[a-z]?", span):
         # A bare backticked version has no stated role; still checkable.
