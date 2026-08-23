@@ -1,13 +1,13 @@
 # vulnvet
 
-[![ci](https://github.com/umeramin99/Open-Source/actions/workflows/ci.yml/badge.svg)](https://github.com/umeramin99/Open-Source/actions/workflows/ci.yml)
-[![python](https://img.shields.io/badge/python-3.9%2B-1f6f8b)](https://github.com/umeramin99/Open-Source/blob/main/pyproject.toml)
-[![dependencies](https://img.shields.io/badge/dependencies-none-1f6f8b)](https://github.com/umeramin99/Open-Source/blob/main/pyproject.toml)
-[![license](https://img.shields.io/badge/license-MIT-1f6f8b)](https://github.com/umeramin99/Open-Source/blob/main/LICENSE)
+[![ci](https://github.com/umeramin99/vulnvet/actions/workflows/ci.yml/badge.svg)](https://github.com/umeramin99/vulnvet/actions/workflows/ci.yml)
+[![python](https://img.shields.io/badge/python-3.9%2B-1f6f8b)](https://github.com/umeramin99/vulnvet/blob/main/pyproject.toml)
+[![dependencies](https://img.shields.io/badge/dependencies-none-1f6f8b)](https://github.com/umeramin99/vulnvet/blob/main/pyproject.toml)
+[![license](https://img.shields.io/badge/license-MIT-1f6f8b)](https://github.com/umeramin99/vulnvet/blob/main/LICENSE)
 
 **Ground a vulnerability report's claims against the actual codebase — before you spend hours triaging it.**
 
-📄 **[umeramin99.github.io/Open-Source](https://umeramin99.github.io/Open-Source/)** — what it does, with a real dossier you can flip between a fabricated and an honest report.
+📄 **[umeramin99.github.io/vulnvet](https://umeramin99.github.io/vulnvet/)** — what it does, with a real dossier you can flip between a fabricated and an honest report.
 
 You get a report. It's confident, well-formatted, and cites `ngtcp2_http3_handle_priority_frame()` in `lib/vquic/ngtcp2.c:1042`. Disproving it means checking out the right tag, grepping for the function, opening the file, counting lines, checking whether those versions ever existed.
 
@@ -96,8 +96,8 @@ $ pipx install vulnvet         # or isolated
 From source:
 
 ```console
-$ git clone https://github.com/umeramin99/Open-Source
-$ cd Open-Source && pip install -e .
+$ git clone https://github.com/umeramin99/vulnvet
+$ cd vulnvet && pip install -e .
 ```
 
 Requires Python 3.9+ and `git` on PATH. No other dependencies, no network access, no API keys — vulnvet runs entirely offline against a local checkout.
@@ -152,7 +152,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0        # vulnvet needs history and tags
-      - uses: umeramin99/Open-Source@main
+      - uses: umeramin99/vulnvet@main
         id: vulnvet
         with:
           report: ${{ github.event.issue.body }}
