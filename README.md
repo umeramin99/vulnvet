@@ -27,7 +27,7 @@ File:line references
       hint: closest real file: lib/vquic/curl_ngtcp2.c
 
 Summary
-  1 verified   3 not found   3 mismatched   1 uncheckable
+  1 verified   2 not found   3 mismatched   1 uncheckable
   SEVERE GROUNDING FAILURES
 ```
 

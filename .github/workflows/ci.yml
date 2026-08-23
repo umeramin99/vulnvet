@@ -68,6 +68,16 @@ jobs:
           claims = {f["claim"]: f["verdict"] for f in data["findings"]}
           if claims.get("ngtcp2_http3_handle_priority_frame") != "NOT_FOUND":
               sys.exit("expected the fabricated symbol to be NOT_FOUND")
+          # README.md and docs/index.html both quote this tally as real
+          # output. It silently drifted once; a doc that misreports the
+          # tool's own run is the one inaccuracy this project cannot afford.
+          expected = {"verified": 1, "not_found": 2, "mismatch": 3,
+                      "uncheckable": 1}
+          counts = data["counts"]
+          drifted = {k: (counts[k], v) for k, v in expected.items()
+                     if counts[k] != v}
+          if drifted:
+              sys.exit(f"documented tally drifted (got, expected): {drifted}")
           PY
 
       - name: The grounded report must ground
