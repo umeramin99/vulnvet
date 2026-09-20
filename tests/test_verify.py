@@ -321,3 +321,31 @@ def test_attribution_to_nonexistent_file_does_not_change_symbol_verdict(fixture_
         )
     )
     assert f.verdict is Verdict.VERIFIED
+
+
+def test_range_end_past_eof_is_a_mismatch(fixture_repo):
+    """Checking only the start graded "src/http.c:1-9000" VERIFIED
+    against a file of a few dozen lines."""
+    v = make_verifier(fixture_repo)
+    f = v.verify(
+        Claim(
+            ClaimType.FILE_LINE,
+            "src/http.c:1-9000",
+            extra={"path": "src/http.c", "line": 1, "end_line": 9000},
+        )
+    )
+    assert f.verdict is Verdict.MISMATCH
+    assert "1-9000" in f.evidence
+
+
+def test_range_inside_the_file_verifies(fixture_repo):
+    v = make_verifier(fixture_repo)
+    f = v.verify(
+        Claim(
+            ClaimType.FILE_LINE,
+            "src/http.c:1-5",
+            extra={"path": "src/http.c", "line": 1, "end_line": 5},
+        )
+    )
+    assert f.verdict is Verdict.VERIFIED
+    assert "src/http.c:1-5" in f.evidence

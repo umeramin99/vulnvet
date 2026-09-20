@@ -366,6 +366,7 @@ footer a{color:var(--ink-soft)}
         <li><b>Proof-of-concept code is never graded.</b> The reporter's own script is not a claim about your codebase, and searching for it would guarantee a false accusation.</li>
         <li><b>A stack trace walks through whatever was linked in.</b> Frames naming OpenSSL or zlib are unverifiable, not fabricated. vulnvet learns your build root from the frames that <em>do</em> resolve, so it knows which frames are claiming your code.</li>
         <li><b>Environment notes are not version claims.</b> "Tested on Ubuntu 22.04" is never checked against your release tags.</li>
+        <li><b>Uncommitted work is not a fabrication.</b> If your checkout is dirty and the report describes code that exists on disk but is not committed yet, vulnvet says so rather than reporting it missing. It looks outside the pinned revision in one direction only — to withdraw a negative verdict, never to grant a positive one.</li>
         <li><b>Prose is not code.</b> <code>use_after_free</code> is jargon, not a symbol; <code>Node.js</code> is a product, not a file.</li>
         <li><b>Nothing is asserted beyond the evidence.</b> Search results are capped, so "appears only in documentation" is only said when the result list wasn't truncated — and anything a budget skipped is named, and blocks a clean grade.</li>
       </ul>

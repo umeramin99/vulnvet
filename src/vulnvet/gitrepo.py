@@ -90,6 +90,7 @@ class Repo:
         self._blob_cache: Dict[Tuple[str, str], Optional[str]] = {}
         self._blob_chars = 0
         self._tags: Optional[List[str]] = None
+        self._dirty: Optional[bool] = None
         try:
             out = self._run("rev-parse", "--is-inside-work-tree")
         except GitError as exc:
@@ -267,6 +268,37 @@ class Repo:
             return lines[line - 1].rstrip("\r")
         return None
 
+    # ------------------------------------------------------- working tree
+
+    def is_dirty(self) -> bool:
+        """Does the checkout carry changes that are not committed?
+
+        Everything else here reads a pinned revision, which is the whole
+        point - but a maintainer running vulnvet on their own checkout
+        often has uncommitted work, and a report describing it would be
+        graded against a tree that does not contain it yet.
+        """
+        if self._dirty is None:
+            out = self._run("status", "--porcelain", check=False)
+            self._dirty = bool(out.strip())
+        return self._dirty
+
+    def worktree_has_path(self, path: str) -> bool:
+        """Is this path present on disk, whatever the revision holds?"""
+        candidate = os.path.normpath(os.path.join(self.path, path))
+        root = os.path.abspath(self.path)
+        if not os.path.abspath(candidate).startswith(root + os.sep):
+            return False
+        return os.path.isfile(candidate)
+
+    def grep_worktree(self, word: str) -> List[Tuple[str, int, str]]:
+        """Whole-word search of the working tree rather than a revision."""
+        out = self._run(
+            "grep", "-n", "-w", "-I", "-z", "--fixed-strings", "-e", word,
+            check=False,
+        )
+        return self._parse_grep(out, None)
+
     # ----------------------------------------------------------------- grep
 
     def grep_word(
@@ -309,16 +341,18 @@ class Repo:
         return specs
 
     @staticmethod
-    def _parse_grep(out: str, rev: str) -> List[Tuple[str, int, str]]:
+    def _parse_grep(out: str, rev: Optional[str]) -> List[Tuple[str, int, str]]:
         """Parse ``git grep -z`` output: rev:path NUL line NUL? text.
 
         With -z the path is NUL-terminated, so a path containing a colon
         cannot be mistaken for a path:line boundary.
         """
         hits: List[Tuple[str, int, str]] = []
-        prefix = rev + ":"
+        # A revision search prefixes every record with "<rev>:"; a
+        # working-tree search has no prefix at all.
+        prefix = rev + ":" if rev else ""
         for record in out.split("\n"):
-            if not record.startswith(prefix):
+            if prefix and not record.startswith(prefix):
                 continue
             rest = record[len(prefix):]
             path, sep, remainder = rest.partition("\0")
