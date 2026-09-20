@@ -1032,6 +1032,32 @@ def _self_exclusions(report_path: str, repo: Repo) -> List[str]:
     return [rel.replace(os.sep, "/")]
 
 
+def _suggested_rev(claims: List[Claim], repo: Repo) -> Optional[str]:
+    """A version the report names that this repository actually has.
+
+    Telling someone to "re-run with --rev <version>" when the report is
+    sitting right there naming one is a step the tool can take itself.
+    Only a version with a matching tag is offered, so the suggestion
+    never sends anyone after a revision that does not exist.
+    """
+    preferred = ("affected", "range", "introduced", "mentioned", "fixed")
+    candidates: List[str] = []
+    for role in preferred:
+        for claim in claims:
+            if claim.type is not ClaimType.VERSION:
+                continue
+            if claim.extra.get("role") != role:
+                continue
+            if claim.extra.get("product"):
+                continue  # a third party's version is not ours to check
+            value = claim.extra.get("end") or claim.extra.get("start")
+            candidates.append(value or claim.value)
+    for value in candidates:
+        if value and repo.resolve_rev(value):
+            return value
+    return None
+
+
 def build_dossier(
     report_path: str,
     repo: Repo,
@@ -1057,10 +1083,20 @@ def build_dossier(
         if sha is None:
             raise GitError("repository has no commits (cannot resolve HEAD)")
         rev_name = repo.rev_name(sha)
-        run_notes.append(
-            "no --rev given: checking HEAD. If the report names an affected "
-            "version, re-run with --rev <version> for a fairer check."
-        )
+        suggestion = _suggested_rev(claims, repo)
+        if suggestion:
+            run_notes.append(
+                f"no --rev given, so this checked HEAD. The report itself "
+                f"names version {suggestion}, which exists in this "
+                f"repository: re-run with --rev {suggestion} to grade it "
+                f"against the code the reporter says they looked at."
+            )
+        else:
+            run_notes.append(
+                "no --rev given: checking HEAD. If the report names an "
+                "affected version, re-run with --rev <version> for a "
+                "fairer check."
+            )
 
     if repo.is_dirty():
         run_notes.append(
