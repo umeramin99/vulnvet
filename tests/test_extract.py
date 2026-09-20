@@ -262,3 +262,29 @@ def test_attribution_ignores_product_paths():
     claims, _ = extract_claims(text)
     syms = claims_of(claims, ClaimType.SYMBOL)
     assert all(c.extra.get("in_file") is None for c in syms)
+
+
+def test_line_ranges_and_permalink_positions():
+    """A report cites positions in more than one notation, and dropping
+    the end of a range meant a fabricated one was graded on its start."""
+    claims, _ = extract_claims(
+        "Range src/http.c:10-20, permalink src/http.c#L30, "
+        "permalink range src/http.c#L40-L50, column src/http.c:60:8.\n"
+    )
+    positions = {
+        c.value: (c.extra.get("line"), c.extra.get("end_line"))
+        for c in claims_of(claims, ClaimType.FILE_LINE)
+    }
+    assert positions["src/http.c:10-20"] == (10, 20)
+    assert positions["src/http.c:30"] == (30, None)
+    assert positions["src/http.c:40-50"] == (40, 50)
+    # a column is not a second line number
+    assert positions["src/http.c:60"] == (60, None)
+
+
+def test_a_backwards_range_keeps_only_its_start():
+    claims, _ = extract_claims("Backwards: src/http.c:90-10.\n")
+    fl = claims_of(claims, ClaimType.FILE_LINE)
+    assert len(fl) == 1
+    assert fl[0].extra["line"] == 90
+    assert "end_line" not in fl[0].extra

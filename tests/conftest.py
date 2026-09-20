@@ -128,3 +128,35 @@ def submodule_repo(tmp_path_factory):
     git(main, "add", "-A")
     git(main, "commit", "-q", "-m", "add submodule")
     return str(main)
+
+
+@pytest.fixture
+def dirty_repo(tmp_path):
+    """A checkout with uncommitted work, as a maintainer's usually is.
+
+    The other fixtures commit everything, so nothing else exercises the
+    case where the report describes code that exists on disk but not yet
+    in any revision.
+    """
+    path = tmp_path / "dirty"
+    path.mkdir()
+    git(path, "init", "-q")
+    git(path, "config", "user.email", "test@example.invalid")
+    git(path, "config", "user.name", "Test")
+    (path / "src").mkdir()
+    (path / "src" / "http.c").write_text(
+        "int parse_header(char *b)\n{\n    return 0;\n}\n", encoding="utf-8"
+    )
+    git(path, "add", "-A")
+    git(path, "commit", "-q", "-m", "init")
+
+    # Work in progress: a new function and a new file, neither committed.
+    (path / "src" / "http.c").write_text(
+        "int parse_header(char *b)\n{\n    return 0;\n}\n\n"
+        "int validate_length(size_t n)\n{\n    return n < 1024;\n}\n",
+        encoding="utf-8",
+    )
+    (path / "src" / "newfile.c").write_text(
+        "int brand_new_helper(void) { return 1; }\n", encoding="utf-8"
+    )
+    return str(path)

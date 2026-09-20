@@ -242,6 +242,34 @@ class Verifier:
             return self._basenames[close[0]][0], False
         return None
 
+    def _uncommitted_note(self, kind: str) -> Optional[str]:
+        """Evidence text when the working tree, but not the revision, has it.
+
+        This is the one place vulnvet looks outside the revision it was
+        given, and it looks in one direction only: to withdraw a negative
+        verdict, never to grant a positive one. A maintainer running this
+        on their own checkout usually has uncommitted work, and a report
+        describing that work is not a fabricated report.
+        """
+        return (
+            f"{kind} is not committed at {self.rev}, but is present in the "
+            f"working tree - the report may describe uncommitted work. "
+            f"Re-run with --rev to check a revision that contains it."
+        )
+
+    def _path_is_uncommitted(self, path: str) -> bool:
+        if not self.repo.is_dirty():
+            return False
+        return self.repo.worktree_has_path(path)
+
+    def _symbol_is_uncommitted(self, name: str) -> bool:
+        if not self.repo.is_dirty():
+            return False
+        try:
+            return bool(self.repo.grep_worktree(name))
+        except GitError:
+            return False
+
     # ---------------------------------------------------------------- FILE
 
     def _verify_file(self, claim: Claim) -> Finding:
@@ -282,6 +310,10 @@ class Verifier:
                 f"no file at this path at {self.rev}, but a file with the "
                 f"same name exists elsewhere",
                 suggestion=f"did the reporter mean {suggested[0]}?",
+            )
+        if self._path_is_uncommitted(path):
+            return Finding(
+                claim, Verdict.MISMATCH, self._uncommitted_note("this file"),
             )
         return Finding(
             claim, Verdict.NOT_FOUND,
@@ -329,6 +361,11 @@ class Verifier:
                     f"no file at this path at {self.rev}",
                     suggestion=f"did the reporter mean {suggested[0]}?",
                 )
+            if self._path_is_uncommitted(path):
+                return Finding(
+                    claim, Verdict.MISMATCH,
+                    self._uncommitted_note("this file"),
+                )
             return Finding(
                 claim, Verdict.NOT_FOUND,
                 f"no such file anywhere in the tree at {self.rev}",
@@ -342,19 +379,31 @@ class Verifier:
                 claim, Verdict.UNCHECKABLE,
                 f"{resolved} exists but its contents could not be read",
             )
-        if line > count:
+        # A cited range asserts both ends. Checking only the start let
+        # "src/http.c:1-9000" grade VERIFIED against an eight-line file.
+        end = claim.extra.get("end_line")
+        cited = f"lines {line}-{end}" if end else f"line {line}"
+        beyond = max(line, end or line)
+        if beyond > count:
+            which = (
+                f"the report cites {cited}"
+                if end
+                else f"the report cites line {line}"
+            )
             return Finding(
                 claim,
                 Verdict.MISMATCH,
-                f"{resolved} exists but has only {count} lines at {self.rev}; "
-                f"the report cites line {line}",
+                f"{resolved} exists but has only {count} lines at "
+                f"{self.rev}; {which}",
             )
         text = self.repo.line_at(self.sha, resolved, line) or ""
         snippet = text.strip()[:80]
+        where = f"{resolved}:{line}-{end}" if end else f"{resolved}:{line}"
+        opening = " - opens: " if end else " - reads: "
         return Finding(
             claim, Verdict.VERIFIED,
-            f"{resolved}:{line} exists at {self.rev}"
-            + (f' - reads: "{snippet}"' if snippet else " (blank line)"),
+            f"{where} exists at {self.rev}"
+            + (f'{opening}"{snippet}"' if snippet else " (blank line)"),
         )
 
     # -------------------------------------------------------------- SYMBOL
@@ -451,6 +500,11 @@ class Verifier:
             f"identifier appears nowhere in the tree at {self.rev} "
             f"(whole-word search across {len(self._tree)} files)"
         )
+        if self._symbol_is_uncommitted(name):
+            return Finding(
+                claim, Verdict.MISMATCH,
+                self._uncommitted_note(f"'{name}'"),
+            )
         return Finding(
             claim, Verdict.NOT_FOUND, evidence,
             suggestion=self._token_paste_caveat(),
@@ -1008,6 +1062,13 @@ def build_dossier(
             "version, re-run with --rev <version> for a fairer check."
         )
 
+    if repo.is_dirty():
+        run_notes.append(
+            "the checkout has uncommitted changes; claims are graded "
+            "against the committed revision, and anything the report "
+            "describes that is only in the working tree is reported as "
+            "such rather than as missing."
+        )
     if getattr(repo, "subdir", ""):
         run_notes.append(
             f"--repo pointed at the subdirectory {repo.subdir}; claims were "

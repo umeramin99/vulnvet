@@ -75,6 +75,7 @@ A tool that cries fabrication at an honest reporter is worse than no tool. Every
 - Paths inside submodules, and files a suggested-fix patch proposes to *create*, are not citations of things that should already exist.
 - In a codebase that uses `##` token pasting, a missing symbol carries a caveat: the preprocessor can build identifiers that never appear literally.
 - If the report file itself lives inside the repo, it's excluded from searches — a report must never corroborate itself.
+- **Uncommitted work is not a fabrication.** If your checkout is dirty and the report describes code that exists on disk but isn't committed yet, vulnvet says so instead of reporting it missing. It looks outside the pinned revision in exactly one direction — to withdraw a negative verdict, never to grant a positive one.
 
 Escalation to "characteristic of fabricated reports" needs a *pattern*: either several fabricated citations, or failures clearly outweighing what the report got right. One bad citation among many good ones is a correction to ask for, not an accusation.
 
