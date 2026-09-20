@@ -84,3 +84,34 @@ def test_a_clean_checkout_is_graded_exactly_as_before(fixture_repo):
     symbols = verdicts(dossier, ClaimType.SYMBOL)
     assert symbols["totally_invented_symbol"] is Verdict.NOT_FOUND
     assert not any("uncommitted" in note for note in dossier.notes)
+
+
+# --- suggesting the revision the report itself names ---------------------
+
+def test_the_note_names_a_version_the_report_gave(fixture_repo):
+    """Telling someone to "re-run with --rev <version>" when the report is
+    sitting right there naming one is a step the tool can take itself."""
+    dossier = vet("The flaw affects version 1.0.0 of the parser.\n", fixture_repo)
+    notes = " ".join(dossier.notes)
+    assert "--rev 1.0.0" in notes
+
+
+def test_no_version_in_the_report_keeps_the_general_advice(fixture_repo):
+    dossier = vet("The parser is broken somehow.\n", fixture_repo)
+    notes = " ".join(dossier.notes)
+    assert "--rev <version>" in notes
+
+
+def test_a_version_this_repository_lacks_is_never_suggested(fixture_repo):
+    """Sending someone after a revision that does not exist would turn one
+    confusing run into two."""
+    dossier = vet("The flaw affects version 99.1.0.\n", fixture_repo)
+    notes = " ".join(dossier.notes)
+    assert "--rev 99.1.0" not in notes
+    assert "--rev <version>" in notes
+
+
+def test_a_third_partys_version_is_never_suggested(fixture_repo):
+    """"Tested on Ubuntu 22.04" is not a revision of this project."""
+    dossier = vet("Tested on Ubuntu 22.04 against the parser.\n", fixture_repo)
+    assert "--rev 22.04" not in " ".join(dossier.notes)
