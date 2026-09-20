@@ -35,7 +35,12 @@ FILE_RE = re.compile(
     # git layer as a pathspec.
     r"((?:[A-Za-z0-9_.+][A-Za-z0-9_.+-]*/)*[A-Za-z0-9_.+][A-Za-z0-9_.+-]*"
     r"\.(?:%s))" % SOURCE_EXTS
-    + r"(?::(\d+))?(?!\.?\w)"
+    # An optional position: ":42", ":42-60", ":42:8" (line:column), or
+    # GitHub's permalink form "#L42" / "#L42-L60". A cited range whose
+    # end lies past the file is a checkable error, and dropping the end
+    # silently graded "src/http.c:1-9000" on line 1 alone.
+    + r"(?::(\d+)(?:-(\d+))?(?::\d+)?|\#[Ll](\d+)(?:-[Ll]?(\d+))?)?"
+    + r"(?!\.?\w)"
 )
 
 #: ``./lib/http.c`` names the same file as ``lib/http.c``, and that prefix
@@ -243,6 +248,24 @@ def _named_product(match: "re.Match") -> Optional[str]:
     if not word or word in _VERSION_FILLER:
         return None
     return raw.strip()
+
+
+def _file_position(match: "re.Match") -> Tuple[Optional[int], Optional[int]]:
+    """(start, end) line numbers from a FILE_RE match, either notation."""
+    start = _safe_line(match.group(2)) or _safe_line(match.group(4))
+    end = _safe_line(match.group(3)) or _safe_line(match.group(5))
+    if start is not None and end is not None and end < start:
+        end = None
+    return start, end
+
+
+def _line_claim(path: str, start: int, end: Optional[int]) -> Tuple[str, Dict[str, Any]]:
+    """The claim value and payload for a cited line or line range."""
+    extra: Dict[str, Any] = {"path": path, "line": start}
+    if end is not None and end != start:
+        extra["end_line"] = end
+        return f"{path}:{start}-{end}", extra
+    return f"{path}:{start}", extra
 
 
 def _safe_line(text: Optional[str]) -> Optional[int]:
@@ -644,16 +667,13 @@ def extract_claims(
                     path = path[len(prefix):]
             if path.lower() in PRODUCT_FILE_NAMES:
                 continue
-            file_line = _safe_line(m.group(2))
-            if file_line is not None:
+            start, end = _file_position(m)
+            if start is not None:
+                value, payload = _line_claim(path, start, end)
                 add(
                     Claim(
-                        ClaimType.FILE_LINE,
-                        f"{path}:{file_line}",
-                        lineno,
-                        context,
-                        "prose",
-                        {"path": path, "line": file_line},
+                        ClaimType.FILE_LINE, value, lineno, context,
+                        "prose", payload,
                     )
                 )
             else:
@@ -916,16 +936,13 @@ def _extract_from_code_span(
         path = _tree_relative_path(fm.group(1))
         if path is None or path.lower() in PRODUCT_FILE_NAMES:
             return
-        span_line = _safe_line(fm.group(2))
-        if span_line is not None:
+        span_start, span_end = _file_position(fm)
+        if span_start is not None:
+            value, payload = _line_claim(path, span_start, span_end)
             add(
                 Claim(
-                    ClaimType.FILE_LINE,
-                    f"{path}:{span_line}",
-                    lineno,
-                    context,
-                    "inline-code",
-                    {"path": path, "line": span_line},
+                    ClaimType.FILE_LINE, value, lineno, context,
+                    "inline-code", payload,
                 )
             )
         else:
