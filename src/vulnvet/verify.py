@@ -129,17 +129,16 @@ _C_FAMILY_EXTS = (
 _TOKEN_PASTE_RE = re.compile(r"\w\s*##\s*\w")
 
 
-#: A qualified citation: Engine._run_query, Foo::bar, module.helper.
-_QUALIFIER_RE = re.compile(r"(?:::|\.)")
+def _split_qualified(name: str) -> Tuple[str, str]:
+    """(owner, member) for a qualified citation like ``Engine._run_query``.
 
-
-def _split_qualified(name: str):
-    """(owner, separator, member) for a qualified symbol citation."""
+    ``("", name)`` when the name carries no qualifier at all.
+    """
     for sep in ("::", "."):
         if sep in name:
             head, _, tail = name.rpartition(sep)
-            return head, sep, tail
-    return "", "", name
+            return head, tail
+    return "", name
 
 
 class Verifier:
@@ -495,7 +494,10 @@ class Verifier:
             + (f'{opening}"{snippet}"' if snippet else " (blank line)"),
         )
 
-    def _verify_qualified(self, claim, name, head, tail, tail_hits) -> Finding:
+    def _verify_qualified(
+        self, claim: Claim, name: str, head: str, tail: str,
+        tail_hits: List[Tuple[str, int, str]],
+    ) -> Finding:
         """Grade ``Head.tail`` when the tail exists but the joined form cannot.
 
         The question a maintainer needs answered is whether the method the
@@ -620,14 +622,14 @@ class Verifier:
                         ),
                     )
                 hits = in_file
-        if not hits and _QUALIFIER_RE.search(name):
+        if not hits and ("::" in name or "." in name):
             # A qualified name - Engine._run_query, Foo::bar, mod.helper -
             # is how Python, Java, JavaScript, Ruby and C++ reports cite a
             # method, and it is NEVER the literal text of the source: the
             # call site reads self._run_query(...). Grading the whole
             # string as one identifier reported the commonest correct
             # citation in most languages as a fabrication.
-            head, _, tail = _split_qualified(name)
+            head, tail = _split_qualified(name)
             if len(tail) >= 3:
                 tail_hits = self.repo.grep_word(
                     self.sha, tail, excludes=self.excludes

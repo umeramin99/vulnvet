@@ -166,8 +166,7 @@ VERSION_ROLE_RES: List[Tuple[str, re.Pattern]] = [
             r"(?:prior\s+to|before|earlier\s+than|older\s+than|"
             r"up\s+to\s+(?:but\s+not\s+including|and\s+excluding)|"
             r"below|<=?)\s*"
-            r"(?P<product>[A-Za-z][A-Za-z0-9_.-]{0,20}\s+)?(?:version\s+|v)?%s"
-            % VER_NAMED,
+            r"%s(?:version\s+|v)?%s" % (PRODUCT, VER_NAMED),
             re.IGNORECASE,
         ),
     ),
@@ -284,7 +283,7 @@ _VERSION_FILLER = frozenset(
         "addressed", "covering", "covers", "including", "includes",
         "spanning", "spans", "shipped", "ships", "exists", "existed",
         "occurs", "occurred", "applies", "regression", "flaw", "bug",
-        "issue", "vulnerability", "crash", "overflow", "affectsall",
+        "issue", "vulnerability", "crash", "overflow",
     }
 )
 

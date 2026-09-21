@@ -375,7 +375,7 @@ class Repo:
         key = rev
         if key not in self._diff_cache:
             changed = self._run(
-                "diff", "--name-only", "-z", rev, check=False
+                "diff", "--name-only", "-z", rev, "--", check=False
             ).split("\0")
             untracked = self._run(
                 "ls-files", "--others", "--exclude-standard", "-z",
