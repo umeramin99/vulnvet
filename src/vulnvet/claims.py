@@ -100,7 +100,15 @@ class Claim:
     def key(self) -> tuple:
         """Deduplication key."""
         if self.type is ClaimType.FILE_LINE:
-            return (self.type, self.extra.get("path"), self.extra.get("line"))
+            # The end of a range is part of the claim: without it,
+            # "src/http.c:10" swallowed "src/http.c:10-9000" as a
+            # duplicate and the fabricated end was never checked.
+            return (
+                self.type,
+                self.extra.get("path"),
+                self.extra.get("line"),
+                self.extra.get("end_line"),
+            )
         if self.type is ClaimType.STACK_FRAME:
             return (
                 self.type,

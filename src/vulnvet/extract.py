@@ -39,7 +39,12 @@ FILE_RE = re.compile(
     # GitHub's permalink form "#L42" / "#L42-L60". A cited range whose
     # end lies past the file is a checkable error, and dropping the end
     # silently graded "src/http.c:1-9000" on line 1 alone.
-    + r"(?::(\d+)(?:-(\d+))?(?::\d+)?|\#[Ll](\d+)(?:-[Ll]?(\d+))?)?"
+    # The permalink fragment carries a column when the reader selected
+    # part of a line (#L42C5-L60C9). Without somewhere to put the "C5",
+    # the whole position branch failed and the citation silently
+    # degraded to a bare file - a fabricated span graded as a real file.
+    + r"(?::(\d+)(?:-(\d+))?(?::\d+)?"
+    + r"|\#[Ll](\d+)(?:C\d+)?(?:-[Ll]?(\d+)(?:C\d+)?)?)?"
     + r"(?!\.?\w)"
 )
 
@@ -76,7 +81,14 @@ COMMIT_CONTEXT_CHARS = 48
 INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 
 IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
-PAREN_CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]{0,78}(?:::[A-Za-z_][A-Za-z0-9_]{0,78}){0,4})\(")
+PAREN_CALL_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]{0,78}"
+    # Owner.member and Owner::member alike: "Engine._run_query()" is how
+    # a Python, Java, JavaScript or Ruby report names a method, and
+    # refusing to extract it meant the tool had nothing to say about the
+    # single commonest citation outside C.
+    r"(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]{0,78}){0,4})\("
+)
 SNAKE2_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+){2,})\b")
 FUNC_CONTEXT_RE = re.compile(
     r"\b(?:function|method|routine|handler|api)\s+[`\"']?"
@@ -89,7 +101,11 @@ FUNC_CONTEXT_RE = re.compile(
 #: Checking the pair together catches a real function name cited in a file
 #: it does not live in, which grading them separately would miss.
 ATTRIBUTION_RE = re.compile(
-    r"[`\"']?\b([A-Za-z_][A-Za-z0-9_]{0,78}(?:::[A-Za-z_][A-Za-z0-9_]{0,78}){0,4})"
+    # The owner is part of the name: matching only the tail of
+    # "Engine._run_query in app/engine.py" attributed a bare "_run_query"
+    # and left the qualified citation unattributed.
+    r"[`\"']?\b([A-Za-z_][A-Za-z0-9_]{0,78}"
+    r"(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]{0,78}){0,4})"
     r"\b(?:\s*\(\s*\))?[`\"']?"
     r"\s*(?:function\s+)?(?:is\s+)?(?:defined\s+|declared\s+|implemented\s+|"
     r"located\s+|found\s+)?(?:in|of|from|inside|within|at)\s+"
@@ -100,13 +116,24 @@ ATTRIBUTION_RE = re.compile(
 VER = r"(\d+(?:\.\d+)+[a-z]?)"
 #: Same pattern, named, for use alongside other named groups.
 VER_NAMED = r"(?P<ver>\d+(?:\.\d+)+[a-z]?)"
+#: Named endpoints, so a range pattern can gain a product group without
+#: every positional index shifting under it.
+VER_LO = r"(?P<lo>\d+(?:\.\d+)+[a-z]?)"
+VER_HI = r"(?P<hi>\d+(?:\.\d+)+[a-z]?)"
+#: An optional product word before a version. Every version pattern
+#: carries it: attaching it to one spelling only meant "Ubuntu versions
+#: 22.04 through 24.04" was checked against this project's release tags.
+PRODUCT = r"(?P<product>[A-Za-z][A-Za-z0-9_.-]{0,20}\s+)?"
+
 VERSION_RANGE_RE = re.compile(
-    r"(?:versions?\s+|v)%s\s*(?:through|to|until|up\s+to|-|–|—)\s*v?%s"
-    % (VER, VER),
+    r"%s(?:versions?\s+|v)%s\s*(?:through|to|until|up\s+to|-|–|—)\s*v?%s"
+    % (PRODUCT, VER_LO, VER_HI),
     re.IGNORECASE,
 )
 VERSION_BETWEEN_RE = re.compile(
-    r"between\s+(?:versions?\s+)?v?%s\s+and\s+v?%s" % (VER, VER), re.IGNORECASE
+    r"between\s+%s(?:versions?\s+)?v?%s\s+and\s+v?%s"
+    % (PRODUCT, VER_LO, VER_HI),
+    re.IGNORECASE,
 )
 VERSION_ROLE_RES: List[Tuple[str, re.Pattern]] = [
     (
@@ -130,9 +157,24 @@ VERSION_ROLE_RES: List[Tuple[str, re.Pattern]] = [
         ),
     ),
     (
+        # "affected prior to 1.2.0" does not say 1.2.0 is affected - it
+        # says everything below it is, and 1.2.0 is where the fix landed.
+        # Filing it as "affected" made the tool suggest grading the
+        # report against the one release that cannot contain the bug.
+        "before",
+        re.compile(
+            r"(?:prior\s+to|before|earlier\s+than|older\s+than|"
+            r"up\s+to\s+(?:but\s+not\s+including|and\s+excluding)|"
+            r"below|<=?)\s*"
+            r"(?P<product>[A-Za-z][A-Za-z0-9_.-]{0,20}\s+)?(?:version\s+|v)?%s"
+            % VER_NAMED,
+            re.IGNORECASE,
+        ),
+    ),
+    (
         "affected",
         re.compile(
-            r"(?:affects?|affecting|impacts?|present\s+in|prior\s+to|before|"
+            r"(?:affects?|affecting|impacts?|present\s+in|"
             r"tested\s+(?:on|against|with)|reproduced\s+(?:on|in|with)|"
             r"observed\s+in|as\s+of)\s+"
             # A product name before the number ("tested on Ubuntu 22.04")
@@ -144,7 +186,10 @@ VERSION_ROLE_RES: List[Tuple[str, re.Pattern]] = [
     ),
     (
         "affected",
-        re.compile(r"\bversions?\s+v?%s" % VER, re.IGNORECASE),
+        re.compile(
+            r"\b%s(?:versions?\s+)v?%s" % (PRODUCT, VER_NAMED),
+            re.IGNORECASE,
+        ),
     ),
 ]
 
@@ -228,6 +273,18 @@ _VERSION_FILLER = frozenset(
         "that", "our", "your", "their", "its", "current", "latest",
         "stable", "master", "main", "from", "since", "before", "after",
         "using", "under", "than", "as", "is", "was", "are", "were",
+        # The verbs that introduce a version. A product word sits
+        # BEFORE "versions ... through ...", so without these the
+        # trigger itself was captured as the product and every range
+        # in every report read as a third party's.
+        "affects", "affect", "affected", "affecting", "impacts", "impact",
+        "impacted", "impacting", "present", "broken", "vulnerable",
+        "reproduced", "reproduces", "tested", "observed", "introduced",
+        "added", "appears", "appeared", "fixed", "patched", "resolved",
+        "addressed", "covering", "covers", "including", "includes",
+        "spanning", "spans", "shipped", "ships", "exists", "existed",
+        "occurs", "occurred", "applies", "regression", "flaw", "bug",
+        "issue", "vulnerability", "crash", "overflow", "affectsall",
     }
 )
 
@@ -250,10 +307,36 @@ def _named_product(match: "re.Match") -> Optional[str]:
     return raw.strip()
 
 
+def _range_extra(match: "re.Match") -> Dict[str, Any]:
+    """The payload for a version range, product word included."""
+    extra: Dict[str, Any] = {
+        "role": "range",
+        "start": match.group("lo"),
+        "end": match.group("hi"),
+    }
+    product = _named_product(match)
+    if product:
+        extra["product"] = product
+    return extra
+
+
 def _file_position(match: "re.Match") -> Tuple[Optional[int], Optional[int]]:
-    """(start, end) line numbers from a FILE_RE match, either notation."""
-    start = _safe_line(match.group(2)) or _safe_line(match.group(4))
-    end = _safe_line(match.group(3)) or _safe_line(match.group(5))
+    """(start, end) line numbers from a FILE_RE match, either notation.
+
+    A range is all or nothing. Keeping a valid start beside an
+    unparseable end turned "src/http.c:1-9999999999" into a claim about
+    line 1 - which checks out - and threw away the only part of the
+    citation that was wrong. The dossier then printed "src/http.c:1" as
+    if that were what the report said.
+    """
+    written_start = match.group(2) or match.group(4)
+    written_end = match.group(3) or match.group(5)
+    start = _safe_line(written_start)
+    end = _safe_line(written_end)
+    if written_end and end is None:
+        return None, None
+    if written_start and start is None:
+        return None, None
     if start is not None and end is not None and end < start:
         end = None
     return start, end
@@ -316,14 +399,53 @@ def _mask_all(line: str, pattern: re.Pattern) -> str:
     return pattern.sub(lambda m: " " * len(m.group(0)), line)
 
 
+#: ``SOURCE_EXTS`` as a set, for telling ``Engine.render`` (a method
+#: citation) from ``config.yaml`` (a file FILE_RE happened not to claim).
+_SOURCE_EXT_SET = frozenset(SOURCE_EXTS.split("|"))
+
+
+def _is_qualified_symbol(token: str) -> bool:
+    """Does *token* read as ``Owner.member`` rather than a file name?
+
+    ``Foo::bar`` always does - no file is spelled that way. A dot is
+    ambiguous, so the tail decides: a known extension means a file, a
+    one- or two-character tail says nothing worth checking, and anything
+    else is a member.
+    """
+    if "::" in token:
+        return True
+    if "." not in token:
+        return False
+    if token.lower() in PRODUCT_FILE_NAMES:
+        return False
+    head, _, tail = token.rpartition(".")
+    if not head or len(tail) < 3 or tail.lower() in _SOURCE_EXT_SET:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", head))
+
+
+def qualified_tail(token: str) -> str:
+    """The member part of a qualified citation, or "" if unqualified."""
+    if not _is_qualified_symbol(token):
+        return ""
+    for sep in ("::", "."):
+        if sep in token:
+            return token.rpartition(sep)[2]
+    return ""
+
+
 def _looks_like_identifier(token: str) -> bool:
     if len(token) < 4 or len(token) > 80:
         return False
     if is_stopword(token):
         return False
+    if "." in token and not _is_qualified_symbol(token):
+        # "config.yaml", "Node.js", "parse_header.txt": a file or a
+        # product name, never a symbol the tree can be asked about.
+        return False
     has_underscore = "_" in token.strip("_")
     has_camel = bool(re.search(r"[a-z][A-Z]", token))
-    has_scope = "::" in token
+    has_scope = "::" in token or "." in token
     return has_underscore or has_camel or has_scope
 
 
@@ -587,11 +709,11 @@ def extract_claims(
             add(
                 Claim(
                     ClaimType.VERSION,
-                    f"{m.group(1)} .. {m.group(2)}",
+                    f"{m.group('lo')} .. {m.group('hi')}",
                     lineno,
                     context,
                     "prose",
-                    {"role": "range", "start": m.group(1), "end": m.group(2)},
+                    _range_extra(m),
                 )
             )
             consumed_spans.append(m.span())
@@ -599,11 +721,11 @@ def extract_claims(
             add(
                 Claim(
                     ClaimType.VERSION,
-                    f"{m.group(1)} .. {m.group(2)}",
+                    f"{m.group('lo')} .. {m.group('hi')}",
                     lineno,
                     context,
                     "prose",
-                    {"role": "range", "start": m.group(1), "end": m.group(2)},
+                    _range_extra(m),
                 )
             )
             consumed_spans.append(m.span())
@@ -1058,11 +1180,27 @@ def _dedupe(claims: List[Claim]) -> List[Claim]:
         for c in out
         if c.type is ClaimType.STACK_FRAME and c.extra.get("path")
     }
+    # A qualified citation absorbs a bare mention of its own member:
+    # "Engine._run_query()" and "_run_query()" in one report are one
+    # fact, and grading both counted a single citation twice.
+    qualified_owner = {}
+    for claim in out:
+        if claim.type is ClaimType.SYMBOL:
+            tail = qualified_tail(claim.value)
+            if tail and tail != claim.value:
+                qualified_owner.setdefault(tail, claim)
+
     pruned = []
     for claim in out:
         if claim.type is ClaimType.FILE and claim.extra.get("path") in file_line_paths:
             continue
         if claim.type is ClaimType.SYMBOL and claim.value in frame_funcs:
+            continue
+        if claim.type is ClaimType.SYMBOL and claim.value in qualified_owner:
+            owner = qualified_owner[claim.value]
+            # Keep whichever attribution the report actually made.
+            if claim.extra.get("in_file") and not owner.extra.get("in_file"):
+                owner.extra["in_file"] = claim.extra["in_file"]
             continue
         pruned.append(claim)
     return pruned
