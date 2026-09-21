@@ -38,8 +38,15 @@ including one with a real submodule.
 | `test_false_accusation.py` | Does an honest report get accused? |
 | `test_evasion.py` | Does a fabricated report get through? |
 | `test_untrusted_input.py` | Can report text attack the tool? |
+| `test_qualified.py` | Is `Owner.member` read as a method, not a string? |
+| `test_worktree.py` | Is code the revision lacks but the checkout has graded fairly, and the right revision suggested? |
+| `test_dotpaths.py` | Are dotted paths and product names told apart? |
+| `test_buildfiles.py` | Is a build-root frame attributed to the right tree? |
+| `test_hostile_git.py` | Does a hostile repository state stay `UNCHECKABLE`? |
+| `test_docs_match_code.py` | Do the README and project page still describe this tool? |
 
-The last three are the ones to grow. A test in `test_false_accusation.py`
+`test_false_accusation.py`, `test_evasion.py` and `test_untrusted_input.py`
+are the ones to grow. A test in `test_false_accusation.py`
 should read like a report a real person could plausibly file. A test in
 `test_untrusted_input.py` should **fail if you delete the guard it is
 testing** — write it, then delete the guard and watch it go red. An
@@ -62,6 +69,20 @@ made it worse than useless.
    not truncated. The same applies to anything the claim budget skipped.
 5. **The report is hostile input.** It cannot reach `git` as an option,
    cannot inject escape sequences into the dossier, cannot hang the tool.
+6. **Escalation needs a pattern.** One fabricated citation among many
+   that check out is a correction to ask for, not an accusation.
+   `SEVERE GROUNDING FAILURES` requires several strong signals, or
+   failures clearly outweighing the substantive verifications — and
+   "substantive" counts only claims that show the reporter read the
+   code, so a list of real filenames cannot buy its way out.
+7. **The working tree can excuse, never convict.** Code that is on disk
+   or on another branch but not at the pinned revision explains a
+   negative verdict away; nothing outside the revision may ever produce
+   a `VERIFIED`. What counts as being in the tree is git's answer, not
+   the filesystem's: ignored build output is not uncommitted work.
+8. **A citation is one claim.** `Engine._run_query()` and a bare
+   `_run_query()` in the same report are one fact; grading both counted
+   a single citation twice, in the direction that accuses.
 
 ## Adding a new claim type
 

@@ -43,7 +43,9 @@ outputs:
   grade:
     description: >-
       Overall assessment: FULLY GROUNDED, PARTIAL GROUNDING, SEVERE GROUNDING
-      FAILURES, UNCHECKABLE, or NO CHECKABLE CLAIMS.
+      FAILURES, COVERAGE INCOMPLETE, UNCHECKABLE, or NO CHECKABLE CLAIMS.
+      Gate on the values you care about and let anything else fall through
+      to review - the set can grow.
     value: ${{ steps.run.outputs.grade }}
   strong-signals:
     description: Count of fabricated symbols/frames/quoted code.

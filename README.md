@@ -15,23 +15,39 @@ vulnvet does that mechanically, in about a second:
 
 ```console
 $ vulnvet report.md --repo ~/src/curl --rev 8.4.0
+vulnvet - grounding report.md
+  against /home/you/src/curl at curl-8_4_0 (d755a5f7c009)
+
+[...]
 
 Stack trace frames
   x [NOT FOUND  ] ngtcp2_http3_handle_priority_frame
       file /src/curl/lib/vquic/ngtcp2.c not in the tree; function
       'ngtcp2_http3_handle_priority_frame' appears nowhere in the tree at curl-8_4_0
+      report line 50: #0 0x55e3f1a2b4c1 in ngtcp2_http3_handle_priority_frame /src/cu...
+
+[...]
 
 File:line references
   x [NOT FOUND  ] lib/vquic/ngtcp2.c:1042
       no such file anywhere in the tree at curl-8_4_0
       hint: closest real file: lib/vquic/curl_ngtcp2.c
+      report line 29: `lib/vquic/ngtcp2.c:1042`, where the frame payload is copied wit...
+
+[...]
 
 Summary
   1 verified   2 not found   3 mismatched   1 uncheckable
+  1 strong fabrication signal(s): cited symbols/frames/quotes that do not exist in the tree
+
   SEVERE GROUNDING FAILURES
 ```
 
-That's a real run against a real curl checkout. The cited function has never existed in curl.
+That's a real run against a real curl checkout — the counts and evidence are
+verbatim, with whole sections cut where `[...]` says so and long lines wrapped
+to fit. (A tool about unverifiable claims does not get to quote itself loosely.)
+Run it yourself with [`examples/curl-slop-report.md`](examples/curl-slop-report.md).
+The cited function has never existed in curl.
 
 ## Why this exists
 
@@ -47,10 +63,10 @@ vulnvet extracts every mechanically checkable claim in a report and grades each 
 
 | Claim | What's verified |
 |---|---|
-| **Symbols** — `foo_bar()`, "the function `X`" | Does the identifier appear anywhere in the tree? Is it *defined* there, or only mentioned in docs? |
+| **Symbols** — `foo_bar()`, `Engine._run_query()`, "the function `X`" | Does the identifier appear anywhere in the tree? Is it *defined* there, or only mentioned in docs? A qualified name is split: no source line contains `Engine._run_query`, so the member is checked, and then whether it lives with the owner the report names. |
 | **Stack frames** — ASan / gdb traces | Does the function exist, does the file exist, is the line within the file, does that function actually appear in that file? |
 | **Quoted code** — "the vulnerable code looks like this" | Do the quoted lines appear verbatim in the tree? |
-| **file:line** — `src/http.c:1042` | Does the file exist, and does it have that many lines? |
+| **file:line** — `src/http.c:1042`, `src/http.c:100-260` | Does the file exist, and does it have that many lines? A cited range asserts both ends, and both are checked. |
 | **Files** — `lib/vquic/ngtcp2.c` | Does the path exist? Is there a same-named file elsewhere (wrong directory) or a near-match (typo)? |
 | **Versions** — "affects 8.1.0 through 8.4.0" | Do those versions exist as release tags? Is the range inverted? |
 | **Commits** — `deadbeef` | Does that commit exist in this repository? |
@@ -73,9 +89,9 @@ A tool that cries fabrication at an honest reporter is worse than no tool. Every
 - A quoted snippet with fewer than three distinctive lines is too small to grade fairly, and code pasted with line-number gutters is de-guttered before matching.
 - Versions attributed to something else ("tested on Ubuntu 22.04") aren't checked against your release tags. Neither are version claims in a repo with no tags.
 - Paths inside submodules, and files a suggested-fix patch proposes to *create*, are not citations of things that should already exist.
-- In a codebase that uses `##` token pasting, a missing symbol carries a caveat: the preprocessor can build identifiers that never appear literally.
+- In a codebase that uses `##` token pasting, a missing symbol carries a caveat: the preprocessor can build identifiers that never appear literally. The caveat needs a C-family file and a paste-shaped context, so a Markdown heading does not earn every project the excuse.
 - If the report file itself lives inside the repo, it's excluded from searches — a report must never corroborate itself.
-- **Uncommitted work is not a fabrication.** If your checkout is dirty and the report describes code that exists on disk but isn't committed yet, vulnvet says so instead of reporting it missing. It looks outside the pinned revision in exactly one direction — to withdraw a negative verdict, never to grant a positive one.
+- **Code your checkout has and the revision doesn't is not a fabrication.** If the report describes work you haven't committed — or code that is committed on the branch you're standing on but not at the `--rev` you asked about — vulnvet says which, instead of reporting it missing. It looks outside the pinned revision in exactly one direction: to withdraw a negative verdict, never to grant a positive one. What counts as "in your tree" is git's answer, not the filesystem's, so build output and `node_modules` cannot excuse anything.
 
 Escalation to "characteristic of fabricated reports" needs a *pattern*: either several fabricated citations, or failures clearly outweighing what the report got right. One bad citation among many good ones is a correction to ask for, not an accusation.
 
@@ -89,17 +105,14 @@ And the dossier says this out loud, every time:
 
 ## Install
 
-```console
-$ pip install vulnvet          # once published
-$ pipx install vulnvet         # or isolated
-```
-
-From source:
+Not on PyPI yet, so install from source:
 
 ```console
 $ git clone https://github.com/umeramin99/vulnvet
 $ cd vulnvet && pip install -e .
 ```
+
+Once it is published, `pip install vulnvet` or `pipx install vulnvet` will work too.
 
 Requires Python 3.9+ and `git` on PATH. No other dependencies, no network access, no API keys — vulnvet runs entirely offline against a local checkout.
 
@@ -131,6 +144,13 @@ The repo ships a fictional report in the genre that flooded curl's bounty:
 $ git clone --depth 1 --branch curl-8_4_0 https://github.com/curl/curl /tmp/curl
 $ vulnvet examples/curl-slop-report.md --repo /tmp/curl --rev 8.4.0
 ```
+
+That clone carries one tag, so the report's version range comes back
+UNCHECKABLE and says why — which is the honest answer, not a bug. For the
+version check too, clone normally (or `git fetch --unshallow --tags`
+afterwards); a maintainer's own checkout already has what it needs. Avoid a
+partial clone (`--filter=blob:none`): every search then refetches file
+contents over the network, one blob at a time.
 
 ## As a GitHub Action
 
@@ -195,7 +215,7 @@ for finding in dossier.strong_signals:
 - **Macro-generated and code-generated symbols** may not appear as literal text in the tree, so a legitimate citation can grade NOT FOUND. curl really does build `SSL_RSA_WITH_RC4_128_MD5` out of `SSL_##num_wo_prefix`, and no grep will find it. vulnvet flags the risk when it sees `##` in the tree, but check the evidence line before acting.
 - **Grep-level symbol checking** doesn't distinguish a definition from a comment mentioning the name. Where vulnvet can spot a definition it says so.
 - **Reformatted quotes** — a reporter who re-indents or line-wraps code they copied will score lower on the quoted-code check than one who pastes verbatim. That lands on MISMATCH, never on a fabrication signal.
-- **Shallow clones** hide tags and old commits; vulnvet says "shallow or tagless clone?" rather than pretending. Use `fetch-depth: 0` in CI.
+- **Shallow clones** hide tags and old commits. vulnvet checks whether the clone really is shallow before blaming it, and says which of "shallow", "no tags at all" and "too few tags to tell" applies, rather than pretending to know. Use `fetch-depth: 0` in CI. A *partial* clone (`--filter=blob:none`) is worse than a shallow one here: searches refetch blobs on demand, so a run that takes a second locally can take minutes.
 - **Search results are capped** at 50 hits per query, so evidence lines say "50+" rather than an exact count, and vulnvet won't assert "only in documentation" off a truncated list.
 - **Padding is the obvious attack**, and it's narrowed rather than solved. Listing real filenames is free, so only claims that show the reporter actually read the code — symbols, stack frames, quoted code, `file:line` — count toward "well grounded"; those claims also keep their slots when a report exceeds the extraction budget, and anything the budget did skip is named in the dossier and blocks a clean grade. A fabricated citation is named in the summary even when the grade doesn't escalate. But someone willing to cite genuinely real symbols around a fabricated conclusion will still score well, which is why the dossier gives per-claim evidence: the counts are never the answer on their own.
 

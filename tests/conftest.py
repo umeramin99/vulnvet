@@ -153,10 +153,99 @@ def dirty_repo(tmp_path):
     # Work in progress: a new function and a new file, neither committed.
     (path / "src" / "http.c").write_text(
         "int parse_header(char *b)\n{\n    return 0;\n}\n\n"
-        "int validate_length(size_t n)\n{\n    return n < 1024;\n}\n",
+        "int validate_length(size_t n)\n{\n"
+        "    size_t limit = 1024;\n"
+        "    if (n >= limit)\n"
+        "        return 0;\n"
+        "    return 1;\n}\n",
         encoding="utf-8",
     )
     (path / "src" / "newfile.c").write_text(
         "int brand_new_helper(void) { return 1; }\n", encoding="utf-8"
     )
+    return str(path)
+
+
+ENGINE_PY = '''\
+class Engine:
+    """A database engine, cited the way Python reports cite one."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def _run_query(self, sql):
+        return self.conn.execute(sql)
+
+
+def module_helper(value):
+    return value
+'''
+
+RENDER_PY = '''\
+class Renderer:
+    def render_template(self, name):
+        return name
+'''
+
+
+@pytest.fixture(scope="session")
+def class_repo(tmp_path_factory):
+    """A Python project: methods live on classes and are cited that way.
+
+    The C fixture cannot exercise "Engine._run_query" at all, and that
+    spelling - never the literal text of any source line - is how most
+    of the world writes a method citation.
+    """
+    path = tmp_path_factory.mktemp("class-repo")
+    git(path, "init", "-q")
+    git(path, "config", "user.email", "test@example.invalid")
+    git(path, "config", "user.name", "Test")
+    git(path, "config", "commit.gpgsign", "false")
+    git(path, "config", "tag.gpgsign", "false")
+
+    (path / "app").mkdir()
+    (path / "app" / "engine.py").write_text(ENGINE_PY, encoding="utf-8")
+    (path / "app" / "render.py").write_text(RENDER_PY, encoding="utf-8")
+    (path / "docs").mkdir()
+    (path / "docs" / "CHANGELOG.md").write_text(
+        "# Changes\n\n- 1.0.0: removed `retired_member`, which used to exist.\n",
+        encoding="utf-8",
+    )
+    git(path, "add", "-A")
+    git(path, "commit", "-q", "-m", "initial import")
+    git(path, "tag", "v1.0.0")
+    return str(path)
+
+
+@pytest.fixture(scope="session")
+def ahead_repo(tmp_path_factory):
+    """A clean checkout sitting on a newer revision than the one graded.
+
+    This is the ordinary case for a maintainer: HEAD is main, --rev is
+    the release the report is about. Nothing is uncommitted, so a check
+    gated on dirtiness never looked here.
+    """
+    path = tmp_path_factory.mktemp("ahead-repo")
+    git(path, "init", "-q")
+    git(path, "config", "user.email", "test@example.invalid")
+    git(path, "config", "user.name", "Test")
+    git(path, "config", "commit.gpgsign", "false")
+    git(path, "config", "tag.gpgsign", "false")
+
+    (path / "src").mkdir()
+    (path / "src" / "http.c").write_text(
+        "int parse_header(char *b)\n{\n    return 0;\n}\n", encoding="utf-8"
+    )
+    git(path, "add", "-A")
+    git(path, "commit", "-q", "-m", "init")
+    git(path, "tag", "v1.0.0")
+
+    (path / "src" / "http.c").write_text(
+        "int parse_header(char *b)\n{\n    return 0;\n}\n\n"
+        "int validate_body_length(size_t n)\n{\n    return n < 1024;\n}\n",
+        encoding="utf-8",
+    )
+    git(path, "add", "-A")
+    git(path, "commit", "-q", "-m", "add length validation")
+    git(path, "tag", "v1.1.0")
     return str(path)

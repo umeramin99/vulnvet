@@ -349,3 +349,117 @@ def test_range_inside_the_file_verifies(fixture_repo):
     )
     assert f.verdict is Verdict.VERIFIED
     assert "src/http.c:1-5" in f.evidence
+
+
+def test_one_tag_still_confirms_the_release_it_names(tmp_path):
+    """A project at its first release - or the shallow single-tag clone
+    the quickstart makes - was told its own tag could not be checked,
+    and blamed for a "shallow or tagless clone" it did not have."""
+    import subprocess
+
+    path = tmp_path / "onetag"
+    path.mkdir()
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "Test"],
+        ["config", "commit.gpgsign", "false"],
+        ["config", "tag.gpgsign", "false"],
+    ):
+        subprocess.run(["git", "-C", str(path), *args], check=True,
+                       capture_output=True)
+    (path / "a.c").write_text("int f(void) { return 0; }\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "i"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(path), "tag", "v1.0.0"], check=True,
+                   capture_output=True)
+
+    repo = Repo(str(path))
+    v = Verifier(repo, repo.resolve_rev("v1.0.0"), display="v1.0.0")
+    hit = v.verify(Claim(ClaimType.VERSION, "1.0.0", extra={"role": "affected"}))
+    assert hit.verdict is Verdict.VERIFIED
+
+    # The negative direction is the one a single tag cannot answer.
+    miss = v.verify(Claim(ClaimType.VERSION, "9.9.9", extra={"role": "affected"}))
+    assert miss.verdict is Verdict.UNCHECKABLE
+    assert "shallow" not in miss.evidence
+
+
+def test_a_markdown_heading_is_not_token_pasting(fixture_repo):
+    """`##` matched every Markdown heading, so nearly every project was
+    told its missing symbols might be preprocessor-generated."""
+    v = make_verifier(fixture_repo)
+    f = v.verify(Claim(ClaimType.SYMBOL, "totally_invented_symbol"))
+    assert f.verdict is Verdict.NOT_FOUND
+    assert not (f.suggestion and "token pasting" in f.suggestion)
+
+
+def test_real_token_pasting_still_earns_the_caveat(tmp_path):
+    import subprocess
+
+    path = tmp_path / "pasted"
+    path.mkdir()
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "Test"],
+    ):
+        subprocess.run(["git", "-C", str(path), *args], check=True,
+                       capture_output=True)
+    (path / "macros.h").write_text(
+        "#define MAKE_FN(name) int curl_##name##_handler(void)\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "i"],
+                   check=True, capture_output=True)
+
+    repo = Repo(str(path))
+    v = Verifier(repo, repo.resolve_rev("HEAD"), display="HEAD")
+    f = v.verify(Claim(ClaimType.SYMBOL, "curl_socket_handler"))
+    assert f.verdict is Verdict.NOT_FOUND
+    assert "token pasting" in (f.suggestion or "")
+
+
+def test_an_unresolvable_rev_says_which_problem_it_is(fixture_repo):
+    """One dead-end sentence served "you typed it wrong", "your clone is
+    shallow" and "this project does not tag", and suggested nothing."""
+    import pytest
+    from vulnvet.gitrepo import GitError
+    from vulnvet.verify import build_dossier
+
+    with pytest.raises(GitError) as excinfo:
+        build_dossier("<test>", Repo(fixture_repo), "9.9.9", [], [])
+    message = str(excinfo.value)
+    assert "v1.0.0" in message or "v1.1.0" in message
+    assert "git tag -l" in message
+
+
+def test_a_tilde_repo_path_is_expanded(fixture_repo, monkeypatch):
+    """Nothing expands "~" for a caller passing repo_path to the library,
+    and git is spawned without a shell - so the documented example could
+    not run."""
+    import os
+
+    parent, name = os.path.split(fixture_repo.rstrip("/"))
+    monkeypatch.setenv("HOME", parent)
+    monkeypatch.setenv("USERPROFILE", parent)  # Windows
+    repo = Repo(os.path.join("~", name))
+    assert repo.resolve_rev("v1.0.0")
+
+
+def test_a_tilde_path_still_knows_it_is_the_repository_root(
+    fixture_repo, monkeypatch
+):
+    """The subdirectory was measured from the raw argument, so "~" made
+    it relative to the wrong root - a different drive, on Windows."""
+    import os
+
+    parent, name = os.path.split(fixture_repo.rstrip("/\\"))
+    monkeypatch.setenv("HOME", parent)
+    monkeypatch.setenv("USERPROFILE", parent)  # Windows
+    repo = Repo(os.path.join("~", name))
+    assert repo.subdir == ""

@@ -100,7 +100,15 @@ class Claim:
     def key(self) -> tuple:
         """Deduplication key."""
         if self.type is ClaimType.FILE_LINE:
-            return (self.type, self.extra.get("path"), self.extra.get("line"))
+            # The end of a range is part of the claim: without it,
+            # "src/http.c:10" swallowed "src/http.c:10-9000" as a
+            # duplicate and the fabricated end was never checked.
+            return (
+                self.type,
+                self.extra.get("path"),
+                self.extra.get("line"),
+                self.extra.get("end_line"),
+            )
         if self.type is ClaimType.STACK_FRAME:
             return (
                 self.type,
@@ -280,6 +288,19 @@ class Dossier:
                 "and the report deserves a human read."
             ),
         )
+
+
+#: Every grade :meth:`Dossier.assessment` can return. action.yml and the
+#: README document this set for workflows that gate on it, and a test
+#: pins all three together so a new grade cannot appear in one only.
+GRADES = (
+    "FULLY GROUNDED",
+    "PARTIAL GROUNDING",
+    "SEVERE GROUNDING FAILURES",
+    "COVERAGE INCOMPLETE",
+    "UNCHECKABLE",
+    "NO CHECKABLE CLAIMS",
+)
 
 
 @dataclass
