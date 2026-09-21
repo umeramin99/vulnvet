@@ -344,13 +344,14 @@ footer a{color:var(--ink-soft)}
       <table>
         <thead><tr><th>Claim</th><th>Question</th></tr></thead>
         <tbody>
-          <tr><td>symbols</td><td>Does the identifier appear in the tree at all? Is it defined in source, or only mentioned in release notes?</td></tr>
+          <tr><td>symbols</td><td>Does the identifier appear in the tree at all? Is it defined in source, or only mentioned in release notes? A qualified citation like <code>Engine._run_query()</code> is split — no source line spells it that way — and checked against the owner it names.</td></tr>
           <tr><td>stack frames</td><td>Does the function exist, does the file, is the line inside it, and does that function actually appear in that file?</td></tr>
           <tr><td>quoted code</td><td>Do the quoted lines appear verbatim? Which ones don't?</td></tr>
-          <tr><td>file:line</td><td>Does the file exist, and does it have that many lines?</td></tr>
+          <tr><td>file:line</td><td>Does the file exist, and does it have that many lines? A cited range (<code>src/http.c:100-260</code>) asserts both ends, and both are checked.</td></tr>
           <tr><td>files</td><td>Does the path exist — or is there a same-named file elsewhere, or a near miss?</td></tr>
           <tr><td>versions</td><td>Do those versions exist as release tags? Is the range inverted?</td></tr>
           <tr><td>commits</td><td>Does that commit exist in this repository?</td></tr>
+          <tr><td>CVE IDs</td><td>Is the identifier well-formed, and is the year plausible? Whether it exists in the CVE database is not checked — vulnvet runs offline.</td></tr>
         </tbody>
       </table>
       </div>
@@ -411,7 +412,7 @@ vulnvet report.md --repo . --format markdown -o dossier.md</pre>
 
 <div class="wrap">
   <footer>
-    <span>MIT licensed · no dependencies · 117 tests</span>
+    <span>MIT licensed · no dependencies · 216 tests</span>
     <span><a href="https://github.com/umeramin99/vulnvet">GitHub</a> · <a href="https://github.com/umeramin99/vulnvet/blob/main/SECURITY.md">Security policy</a> · <a href="https://github.com/umeramin99/vulnvet/blob/main/CONTRIBUTING.md">Contributing</a></span>
   </footer>
 </div>
@@ -450,7 +451,7 @@ vulnvet report.md --repo . --format markdown -o dossier.md</pre>
           {v:"no",n:"lib/vquic/ngtcp2.c:1042",w:"no such file anywhere in the tree at curl-8_4_0 — closest real file: lib/vquic/curl_ngtcp2.c"}
         ]},
         {name:"Version claims",claims:[
-          {v:"unk",n:"8.1.0 .. 8.4.0",w:"the checkout has too few version-like tags to check version claims against"}
+          {v:"unk",n:"8.1.0 .. 8.4.0",w:"this clone is shallow, so most tags are missing — run `git fetch --unshallow --tags` before treating any version verdict as evidence"}
         ]}
       ]
     },

@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime
 import difflib
 import re
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from .claims import Claim, ClaimType, Dossier, Finding, Verdict
 from .extract import POC_FILENAME_RE
@@ -115,6 +115,32 @@ def _is_bare_poc_attachment(path: str) -> bool:
     return "/" not in path and bool(POC_FILENAME_RE.match(path))
 
 
+#: "not computed yet", distinct from "computed, and there are none".
+_UNSET = object()
+
+
+#: Where C preprocessor token pasting can actually occur.
+_C_FAMILY_EXTS = (
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".c++", ".hpp", ".hh", ".hxx",
+    ".inc", ".def", ".tcc", ".ipp", ".m", ".mm",
+)
+
+#: "a ## b" joins two tokens; "## Install" is a heading.
+_TOKEN_PASTE_RE = re.compile(r"\w\s*##\s*\w")
+
+
+def _split_qualified(name: str) -> Tuple[str, str]:
+    """(owner, member) for a qualified citation like ``Engine._run_query``.
+
+    ``("", name)`` when the name carries no qualifier at all.
+    """
+    for sep in ("::", "."):
+        if sep in name:
+            head, _, tail = name.rpartition(sep)
+            return head, tail
+    return "", name
+
+
 class Verifier:
     def __init__(
         self,
@@ -136,6 +162,7 @@ class Verifier:
         #: learned from stack frames that do resolve into the tree.
         self.build_roots: set = set()
         self._uses_token_pasting: Optional[bool] = None
+        self._wt_paths: Any = _UNSET
         self._tree = repo.tree_files(rev)
         self._tree_set = set(self._tree)
         self._basenames: dict = {}
@@ -242,31 +269,92 @@ class Verifier:
             return self._basenames[close[0]][0], False
         return None
 
-    def _uncommitted_note(self, kind: str) -> Optional[str]:
-        """Evidence text when the working tree, but not the revision, has it.
+    def _worktree_paths(self) -> Optional[List[str]]:
+        """Which working-tree paths are not what the revision holds.
+
+        Two ways a checkout can differ: uncommitted work, or a HEAD that
+        simply is not the revision being graded - the ordinary case for
+        a maintainer on main grading an older --rev. Gating on dirtiness
+        alone missed the second entirely.
+
+        Every other file is byte-identical to the revision, so the
+        revision search has already answered for it. Narrowing to these
+        paths is what keeps the check from doubling the cost of every
+        NOT FOUND. ``None`` means the list was too long to be worth
+        passing to git, and the whole tree is searched instead.
+        """
+        if self._wt_paths is _UNSET:
+            self._wt_paths = self.repo.paths_differing_from(self.sha)
+        return self._wt_paths
+
+    def _worktree_differs(self) -> bool:
+        paths = self._worktree_paths()
+        return paths is None or bool(paths)
+
+    def _uncommitted_note(self, kind: str) -> str:
+        """Evidence text when the checkout, but not the revision, has it.
 
         This is the one place vulnvet looks outside the revision it was
         given, and it looks in one direction only: to withdraw a negative
         verdict, never to grant a positive one. A maintainer running this
-        on their own checkout usually has uncommitted work, and a report
-        describing that work is not a fabricated report.
+        on their own checkout usually has uncommitted work - or has it
+        sitting on a newer revision than the one being graded - and a
+        report describing either is not a fabricated report.
         """
+        head = self.repo.head_sha()
+        elsewhere = bool(
+            head and not (head.startswith(self.sha) or self.sha.startswith(head))
+        )
+        if elsewhere:
+            where = (
+                f"present in the checked-out tree, which is at {head[:12]}, "
+                f"not {self.rev}"
+            )
+            reason = "the report may describe a newer revision"
+        else:
+            where = "present in the working tree"
+            reason = "the report may describe uncommitted work"
         return (
-            f"{kind} is not committed at {self.rev}, but is present in the "
-            f"working tree - the report may describe uncommitted work. "
-            f"Re-run with --rev to check a revision that contains it."
+            f"{kind} is not committed at {self.rev}, but is {where} - "
+            f"{reason}. Re-run with --rev to check a revision that "
+            f"contains it."
         )
 
     def _path_is_uncommitted(self, path: str) -> bool:
-        if not self.repo.is_dirty():
+        if not self._worktree_differs():
+            return False
+        if path in self.excludes:
+            # The report file itself is never evidence for the report.
             return False
         return self.repo.worktree_has_path(path)
 
-    def _symbol_is_uncommitted(self, name: str) -> bool:
-        if not self.repo.is_dirty():
+    def _quote_is_uncommitted(self, lines: List[str]) -> bool:
+        """Every sampled line on disk, none of them committed yet.
+
+        The same bar a revision has to clear to grade VERIFIED: a
+        partial match in the working tree explains nothing and must not
+        soften the verdict.
+        """
+        if not lines or not self._worktree_differs():
             return False
         try:
-            return bool(self.repo.grep_worktree(name))
+            paths = self._worktree_paths()
+            return all(
+                self.repo.grep_worktree_line(
+                    line, excludes=self.excludes, paths=paths,
+                )
+                for line in lines
+            )
+        except GitError:
+            return False
+
+    def _symbol_is_uncommitted(self, name: str) -> bool:
+        if not self._worktree_differs():
+            return False
+        try:
+            return bool(self.repo.grep_worktree(
+                name, excludes=self.excludes, paths=self._worktree_paths(),
+            ))
         except GitError:
             return False
 
@@ -406,6 +494,92 @@ class Verifier:
             + (f'{opening}"{snippet}"' if snippet else " (blank line)"),
         )
 
+    def _verify_qualified(
+        self, claim: Claim, name: str, head: str, tail: str,
+        tail_hits: List[Tuple[str, int, str]],
+    ) -> Finding:
+        """Grade ``Head.tail`` when the tail exists but the joined form cannot.
+
+        The question a maintainer needs answered is whether the method the
+        report names is real and lives where the report implies. That is
+        what the evidence says here - never that the citation "appears
+        nowhere in the tree", which is false and reads as a fabrication.
+        """
+        attributed = claim.extra.get("in_file")
+        resolved = self._resolve_path(attributed) if attributed else None
+        if resolved:
+            # The report said "Head.tail in Y": ask git about Y directly
+            # rather than filtering capped results.
+            in_file = self.repo.grep_word(
+                self.sha, tail, path=resolved, excludes=self.excludes
+            )
+            if not in_file:
+                best = self._best_hit(tail_hits)
+                return Finding(
+                    claim, Verdict.MISMATCH,
+                    f"'{tail}' exists at {self.rev} (e.g. "
+                    f"{best[0]}:{best[1]}) but never appears in {resolved}, "
+                    f"where the report places '{name}'",
+                    suggestion=f"the report may mean {best[0]}",
+                )
+            tail_hits = in_file
+
+        if _only_in_docs(tail_hits):
+            return Finding(
+                claim, Verdict.MISMATCH,
+                f"'{tail}' appears at {self.rev} only outside source code "
+                f"({self._sample_hits(tail_hits)}) - in documentation, "
+                f"release notes or other non-source files, which is where a "
+                f"removed member still gets mentioned",
+            )
+
+        defn = self._definition_hit(tail, tail_hits)
+        best = self._best_hit(tail_hits)
+        where = defn or f"{best[0]}:{best[1]}"
+        tail_file = where.rsplit(":", 1)[0]
+        shown = "is defined at" if defn else "appears at"
+        spelling = (
+            f"the qualified spelling '{name}' is how a caller writes it, "
+            f"not how the source declares it"
+        )
+
+        # A one- or two-character owner is a local variable, not a type:
+        # "s.read" says nothing checkable about "s".
+        if len(head) < 3:
+            return Finding(
+                claim, Verdict.VERIFIED,
+                f"'{tail}' {shown} {where} at {self.rev}; {spelling}",
+            )
+
+        # Does the owner appear alongside its member? That is as much as a
+        # text search can honestly say about Head.tail, and it is enough to
+        # tell a real citation from an invented one.
+        head_here = self.repo.grep_word(
+            self.sha, head, path=tail_file, excludes=self.excludes
+        )
+        if head_here:
+            return Finding(
+                claim, Verdict.VERIFIED,
+                f"'{tail}' {shown} {where}, in the same file as '{head}' - "
+                f"{spelling}",
+            )
+        head_anywhere = self.repo.grep_word(
+            self.sha, head, excludes=self.excludes
+        )
+        if head_anywhere:
+            return Finding(
+                claim, Verdict.MISMATCH,
+                f"'{tail}' {shown} {where}, and '{head}' exists at "
+                f"{self._sample_hits(head_anywhere)}, but not in the same "
+                f"file - the member may be attributed to the wrong owner",
+                suggestion=f"'{tail}' lives in {tail_file}",
+            )
+        return Finding(
+            claim, Verdict.MISMATCH,
+            f"'{tail}' {shown} {where}, but '{head}' appears nowhere at "
+            f"{self.rev} - the member is real, its stated owner is not",
+        )
+
     # -------------------------------------------------------------- SYMBOL
 
     def _verify_symbol(self, claim: Claim) -> Finding:
@@ -448,21 +622,21 @@ class Verifier:
                         ),
                     )
                 hits = in_file
-        if not hits and "::" in name:
-            # Qualified C++ name: fall back to the method part.
-            method = name.rsplit("::", 1)[-1]
-            if len(method) >= 4:
-                hits = self.repo.grep_word(
-                    self.sha, method, excludes=self.excludes
+        if not hits and ("::" in name or "." in name):
+            # A qualified name - Engine._run_query, Foo::bar, mod.helper -
+            # is how Python, Java, JavaScript, Ruby and C++ reports cite a
+            # method, and it is NEVER the literal text of the source: the
+            # call site reads self._run_query(...). Grading the whole
+            # string as one identifier reported the commonest correct
+            # citation in most languages as a fabrication.
+            head, tail = _split_qualified(name)
+            if len(tail) >= 3:
+                tail_hits = self.repo.grep_word(
+                    self.sha, tail, excludes=self.excludes
                 )
-                if hits:
-                    sample = self._sample_hits(hits)
-                    return Finding(
-                        claim,
-                        Verdict.MISMATCH,
-                        f"'{name}' does not appear verbatim at {self.rev}, "
-                        f"but '{method}' does ({sample})",
-                    )
+                if tail_hits:
+                    return self._verify_qualified(claim, name, head, tail,
+                                                  tail_hits)
         if hits:
             sample = self._sample_hits(hits)
             if _only_in_docs(hits):
@@ -661,6 +835,16 @@ class Verifier:
         if not problems:
             return Finding(claim, Verdict.VERIFIED, evidence)
         if not func_hits_anywhere:
+            # A backtrace is the commonest way a real reporter names a
+            # function, and STACK_FRAME feeds the strong-signal count.
+            # Without this, the exact regression the working-tree check
+            # exists to prevent still fired for anyone whose crash was
+            # in code they had not committed.
+            if self._symbol_is_uncommitted(func):
+                return Finding(
+                    claim, Verdict.MISMATCH,
+                    self._uncommitted_note(f"function '{func}'"),
+                )
             return Finding(claim, Verdict.NOT_FOUND, evidence)
         return Finding(claim, Verdict.MISMATCH, evidence)
 
@@ -808,6 +992,11 @@ class Verifier:
                 f"{self.rev}{where}{hint_note}.{missing_note}",
             )
         if found == 0:
+            if self._quote_is_uncommitted(lines):
+                return Finding(
+                    claim, Verdict.MISMATCH,
+                    self._uncommitted_note(f"this {what}"),
+                )
             return Finding(
                 claim,
                 Verdict.NOT_FOUND,
@@ -828,12 +1017,9 @@ class Verifier:
     def _verify_version(self, claim: Claim) -> Finding:
         tags = self.repo.tags()
         tag_map = self.repo.version_tag_map()
-        if len(tag_map) < 2:
+        if not tag_map:
             return Finding(
-                claim, Verdict.UNCHECKABLE,
-                "the repository has too few version-like tags to check "
-                "version claims against (shallow or tagless clone? "
-                "try `git fetch --tags`)",
+                claim, Verdict.UNCHECKABLE, self._tag_shortfall(),
             )
 
         product = claim.extra.get("product")
@@ -869,6 +1055,10 @@ class Verifier:
                 )
             if inverted:
                 problems.append("the range is inverted (start > end)")
+            if missing and len(tag_map) < 2:
+                return Finding(
+                    claim, Verdict.UNCHECKABLE, self._tag_shortfall(),
+                )
             verdict = (
                 Verdict.NOT_FOUND if len(missing) == 2 else Verdict.MISMATCH
             )
@@ -888,6 +1078,15 @@ class Verifier:
                 f"names a released series rather than a single tag "
                 f"({', '.join(series)})",
             )
+        if len(tag_map) < 2:
+            # One tag cannot distinguish an invented version from one
+            # this clone simply never fetched. The exact-match path
+            # above still grades VERIFIED - a first release, or the
+            # single-tag clone the quickstart makes, is not a reason to
+            # refuse the claim it does match.
+            return Finding(
+                claim, Verdict.UNCHECKABLE, self._tag_shortfall(),
+            )
         near = self._nearest_versions(version, tag_map)
         return Finding(
             claim,
@@ -898,6 +1097,32 @@ class Verifier:
             ),
         )
 
+    def _tag_shortfall(self) -> str:
+        """Why a version cannot be checked here - and what would fix it.
+
+        One message for three situations blamed a "shallow or tagless
+        clone" for a complete checkout of a project at its first
+        release, and offered `git fetch --tags` to someone for whom it
+        does nothing.
+        """
+        if self.repo.is_shallow():
+            return (
+                "this clone is shallow, so most tags are missing - run "
+                "`git fetch --unshallow --tags` before treating any "
+                "version verdict as evidence"
+            )
+        if not self.repo.tags():
+            return (
+                "this repository has no tags at all, so there is nothing "
+                "to match a version against"
+            )
+        return (
+            f"this repository has only "
+            f"{_plural(len(self.repo.version_tag_map()), 'version-like tag')}"
+            f" - too few to tell a wrong version from one this clone never "
+            f"fetched (`git fetch --tags` if it is partial)"
+        )
+
     def _token_paste_caveat(self) -> Optional[str]:
         """Warn when this project could construct the name at compile time.
 
@@ -905,8 +1130,19 @@ class Verifier:
         in any file, so a grep miss is weaker evidence than it looks.
         """
         if self._uses_token_pasting is None:
-            self._uses_token_pasting = bool(
-                self.repo.grep_fixed_line(self.sha, "##", excludes=self.excludes)
+            # "##" alone matches every Markdown heading in every
+            # repository, so nearly every project - vulnvet's own
+            # included - was told its missing symbols might be
+            # preprocessor-generated. Token pasting is a C construct
+            # that joins two tokens, so require both: a C-family file,
+            # and a paste-shaped context.
+            hits = self.repo.grep_fixed_line(
+                self.sha, "##", excludes=self.excludes
+            )
+            self._uses_token_pasting = any(
+                path.lower().endswith(_C_FAMILY_EXTS)
+                and _TOKEN_PASTE_RE.search(text)
+                for path, _, text in hits
             )
         if not self._uses_token_pasting:
             return None
@@ -917,12 +1153,7 @@ class Verifier:
         )
 
     def _names_this_project(self, product: str) -> bool:
-        """Is this word the project itself rather than a third party?"""
-        import os
-
-        word = product.strip().strip(",;:").lower()
-        repo_name = os.path.basename(os.path.abspath(self.repo.path)).lower()
-        return word in (repo_name, repo_name.replace("-", ""), "project")
+        return _names_this_project(product, self.repo.path)
 
     @staticmethod
     def _version_known(version: str, tag_map) -> bool:
@@ -1014,6 +1245,52 @@ class Verifier:
         )
 
 
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def _unresolvable_rev_message(rev_input: str, repo: Repo) -> str:
+    """Say which of the three reasons a revision did not resolve.
+
+    One dead-end sentence for "you typed it wrong", "your clone is
+    shallow" and "this project does not tag" left a first-time user with
+    nothing to try.
+    """
+    head = f"could not resolve --rev '{rev_input}' to a commit"
+    if repo.is_shallow():
+        return (
+            f"{head}: this clone is shallow, so most tags and commits are "
+            f"missing - try `git fetch --unshallow --tags`"
+        )
+    tags = repo.tags()
+    if not tags:
+        return (
+            f"{head}: this repository has no tags at all - pass a branch "
+            f"name or a commit sha instead, or `git fetch --tags` if the "
+            f"clone is partial"
+        )
+    tag_map = repo.version_tag_map()
+    norm = _normalize_version_text(rev_input)
+    if norm and tag_map:
+        near = sorted(
+            tag_map.items(),
+            key=lambda kv: difflib.SequenceMatcher(
+                None, norm, kv[0]
+            ).ratio(),
+            reverse=True,
+        )[:3]
+        spellings = ", ".join(tag for _, tag in near)
+        return (
+            f"{head}: no tag matches that version. This repository spells "
+            f"its releases {spellings} ({_plural(len(tags), 'tag')}; "
+            f"`git tag -l` lists them)"
+        )
+    return (
+        f"{head} (tried tag spellings too). `git tag -l` lists the "
+        f"{_plural(len(tags), 'tag')} this repository has"
+    )
+
+
 def _self_exclusions(report_path: str, repo: Repo) -> List[str]:
     """If the report file sits inside the repo, exclude it from searches:
     a report must never corroborate itself."""
@@ -1032,15 +1309,25 @@ def _self_exclusions(report_path: str, repo: Repo) -> List[str]:
     return [rel.replace(os.sep, "/")]
 
 
-def _suggested_rev(claims: List[Claim], repo: Repo) -> Optional[str]:
+def _suggested_rev(
+    claims: List[Claim], repo: Repo, current_sha: Optional[str] = None,
+) -> Optional[str]:
     """A version the report names that this repository actually has.
 
     Telling someone to "re-run with --rev <version>" when the report is
     sitting right there naming one is a step the tool can take itself.
     Only a version with a matching tag is offered, so the suggestion
-    never sends anyone after a revision that does not exist.
+    never sends anyone after a revision that does not exist - nor back
+    to the revision they just graded.
     """
-    preferred = ("affected", "range", "introduced", "mentioned", "fixed")
+    preferred = ("affected", "range", "introduced", "mentioned",
+                 "before", "fixed")
+    #: Roles that name the boundary the bug was fixed at, not a version
+    #: that has it. Grading a report against the release that fixed it
+    #: is how a truthful report gets a page of NOT FOUND verdicts, so
+    #: the release before it is what gets offered.
+    exclusive = ("before", "fixed")
+    tag_map = repo.version_tag_map()
     candidates: List[str] = []
     for role in preferred:
         for claim in claims:
@@ -1048,14 +1335,67 @@ def _suggested_rev(claims: List[Claim], repo: Repo) -> Optional[str]:
                 continue
             if claim.extra.get("role") != role:
                 continue
-            if claim.extra.get("product"):
-                continue  # a third party's version is not ours to check
-            value = claim.extra.get("end") or claim.extra.get("start")
-            candidates.append(value or claim.value)
+            product = claim.extra.get("product")
+            # "affects Ubuntu 22.04" is not ours to check - but "affects
+            # curl 8.4.0" names this project as plainly as a report can,
+            # and discarding it for carrying a product word at all threw
+            # away the most explicit statement in the report.
+            if product and not _names_this_project(product, repo.path):
+                continue
+            if role == "range":
+                # Both ends are worth trying. Collapsing to the end
+                # alone dropped a real lower bound whenever the upper
+                # one was not a release this repository has.
+                values = [claim.extra.get("end"), claim.extra.get("start")]
+            else:
+                values = [claim.value]
+            for value in values:
+                if not value:
+                    continue
+                if role in exclusive:
+                    value = _last_release_before(repo, value)
+                if value and value not in candidates:
+                    candidates.append(value)
     for value in candidates:
-        if value and repo.resolve_rev(value):
+        # The tag list is already in memory; asking git first cost two
+        # or three processes per version for a question a dict answers.
+        if (_normalize_version_text(value) or value) not in tag_map:
+            continue
+        sha = repo.resolve_rev(value)
+        if sha and sha != current_sha:
             return value
     return None
+
+
+def _names_this_project(product: str, repo_path: str) -> bool:
+    """Is this word the project itself rather than a third party?"""
+    import os
+
+    word = product.strip().strip(",;:").lower()
+    repo_name = os.path.basename(os.path.abspath(repo_path)).lower()
+    return word in (repo_name, repo_name.replace("-", ""), "project")
+
+
+def _last_release_before(repo: Repo, version: str) -> Optional[str]:
+    """The newest released version strictly below *version*.
+
+    "fixed in 1.2.0" and "affects everything prior to 1.2.0" both name a
+    release that does not contain the bug. The last one that does is the
+    tag immediately below it.
+    """
+    target = _version_sort_key(version)
+    if not target:
+        return None
+    best: Optional[Tuple[tuple, str]] = None
+    for released in repo.version_tag_map():
+        key = _version_sort_key(released)
+        if key and key < target and (best is None or key > best[0]):
+            best = (key, released)
+    return best[1] if best else None
+
+
+def _version_sort_key(version: str) -> tuple:
+    return tuple(int(p) for p in re.findall(r"\d+", version))
 
 
 def build_dossier(
@@ -1071,10 +1411,7 @@ def build_dossier(
     if rev_input:
         sha = repo.resolve_rev(rev_input)
         if sha is None:
-            raise GitError(
-                f"could not resolve --rev '{rev_input}' to a commit "
-                f"(tried tag spellings too)"
-            )
+            raise GitError(_unresolvable_rev_message(rev_input, repo))
         rev_name = repo.rev_name(sha)
         if rev_name != rev_input and not sha.startswith(rev_input):
             run_notes.append(f"--rev '{rev_input}' resolved to {rev_name} ({sha[:12]})")
@@ -1083,7 +1420,7 @@ def build_dossier(
         if sha is None:
             raise GitError("repository has no commits (cannot resolve HEAD)")
         rev_name = repo.rev_name(sha)
-        suggestion = _suggested_rev(claims, repo)
+        suggestion = _suggested_rev(claims, repo, current_sha=sha)
         if suggestion:
             run_notes.append(
                 f"no --rev given, so this checked HEAD. The report itself "

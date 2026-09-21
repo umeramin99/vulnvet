@@ -44,6 +44,12 @@ MAX_NEEDLE_CHARS = 8192
 MAX_BLOB_CACHE = 64
 MAX_BLOB_CACHE_CHARS = 4_000_000
 
+#: How many differing paths are still worth naming individually when
+#: searching the working tree. Past this, the revision being graded is
+#: so far from the checkout that a pathspec list costs more than the
+#: search it narrows.
+MAX_WORKTREE_PATHSPECS = 2000
+
 
 def _normalize_version_text(text: str) -> str:
     """Reduce a tag or version string to a comparable dotted core.
@@ -82,7 +88,11 @@ def _prepare_needle(needle: str) -> str:
 
 class Repo:
     def __init__(self, path: str):
-        self.path = path
+        # The shell expands "~" for --repo; nothing expands it for a
+        # caller passing repo_path="~/src/curl" to the library, and git
+        # is spawned without a shell, so the tilde reached git verbatim
+        # and the documented example could not run.
+        self.path = os.path.expanduser(path)
         self._tree_cache: Dict[str, List[str]] = {}
         self._submodule_cache: Dict[str, List[str]] = {}
         # Keyed on (rev, path) and held on the instance, so it can neither
@@ -91,6 +101,11 @@ class Repo:
         self._blob_chars = 0
         self._tags: Optional[List[str]] = None
         self._dirty: Optional[bool] = None
+        self._head: Optional[str] = None
+        self._worktree_files: Optional[set] = None
+        self._shallow: Optional[bool] = None
+        self._diff_cache: Dict[str, Optional[List[str]]] = {}
+        self._rev_cache: Dict[str, Optional[str]] = {}
         try:
             out = self._run("rev-parse", "--is-inside-work-tree")
         except GitError as exc:
@@ -104,10 +119,18 @@ class Repo:
         # disagree. Anchor everything to the top level.
         top = self._run("rev-parse", "--show-toplevel").strip()
         if top:
-            self.subdir = os.path.relpath(
-                os.path.abspath(path), top
-            ).replace(os.sep, "/")
-            if self.subdir == ".":
+            # Against self.path, not the raw argument: an unexpanded "~"
+            # produced a subdirectory relative to the wrong root, and on
+            # Windows a different drive letter entirely. git reports the
+            # toplevel with symlinks already resolved, so resolve ours
+            # too or the two cannot be compared.
+            try:
+                self.subdir = os.path.relpath(
+                    os.path.realpath(self.path), os.path.realpath(top)
+                ).replace(os.sep, "/")
+            except ValueError:  # different drives on Windows
+                self.subdir = ""
+            if self.subdir == "." or self.subdir.startswith(".."):
                 self.subdir = ""
             self.path = top
         else:
@@ -163,13 +186,22 @@ class Repo:
         is matched against the repository's tags (``v8.9.0``,
         ``curl-8_9_0``, ``release-8.9.0``, ...).
         """
+        rev = rev.strip()
+        if rev in self._rev_cache:
+            return self._rev_cache[rev]
+        resolved = None
         for candidate in self._rev_candidates(rev):
             proc = self._spawn(
                 "rev-parse", "--verify", "--quiet", candidate + "^{commit}"
             )
             if proc.returncode == 0 and proc.stdout.strip():
-                return proc.stdout.strip()
-        return None
+                resolved = proc.stdout.strip()
+                break
+        # Memoized: a report may name the same version many times, and
+        # each miss costs two or three processes for an answer that
+        # cannot change within a run.
+        self._rev_cache[rev] = resolved
+        return resolved
 
     def _rev_candidates(self, rev: str) -> List[str]:
         candidates = [rev]
@@ -284,20 +316,142 @@ class Repo:
         return self._dirty
 
     def worktree_has_path(self, path: str) -> bool:
-        """Is this path present on disk, whatever the revision holds?"""
-        candidate = os.path.normpath(os.path.join(self.path, path))
-        root = os.path.abspath(self.path)
-        if not os.path.abspath(candidate).startswith(root + os.sep):
-            return False
-        return os.path.isfile(candidate)
+        """Is this path something a future revision of this repo could hold?
 
-    def grep_worktree(self, word: str) -> List[Tuple[str, int, str]]:
-        """Whole-word search of the working tree rather than a revision."""
-        out = self._run(
-            "grep", "-n", "-w", "-I", "-z", "--fixed-strings", "-e", word,
-            check=False,
-        )
+        Presence on disk is not enough. Build output, ``.venv`` and
+        ``node_modules`` are on disk and are never going to be in any
+        revision, so treating them as uncommitted work pointed the
+        maintainer at a commit that can never contain the file - and let
+        a report cite a plausible build-artifact path to be graded
+        softly on any built checkout. git decides instead: tracked, or
+        untracked and not ignored.
+
+        The containment check resolves symlinks before comparing.
+        ``normpath`` is textual and ``isfile`` follows links, so a
+        committed symlink to a vendored tree outside the repository was
+        a tunnel straight through the guard.
+        """
+        if not path:
+            return False
+        normalized = path.replace(os.sep, "/").strip("/")
+        if normalized == ".git" or normalized.startswith(".git/"):
+            return False
+        root = os.path.realpath(self.path)
+        candidate = os.path.realpath(os.path.join(root, path))
+        if candidate != root and not candidate.startswith(root + os.sep):
+            return False
+        if not os.path.isfile(candidate):
+            return False
+        return normalized in self.worktree_files()
+
+    def worktree_files(self) -> set:
+        """Every path git currently considers part of the project.
+
+        Tracked files plus untracked ones that are not ignored: exactly
+        the set that a future commit could contain.
+        """
+        if self._worktree_files is None:
+            out = self._run(
+                "ls-files", "--cached", "--others", "--exclude-standard",
+                "-z", check=False,
+            )
+            self._worktree_files = {p for p in out.split("\0") if p}
+        return self._worktree_files
+
+    def is_shallow(self) -> bool:
+        """A shallow clone genuinely is missing history and tags."""
+        if self._shallow is None:
+            out = self._run(
+                "rev-parse", "--is-shallow-repository", check=False
+            )
+            self._shallow = out.strip() == "true"
+        return self._shallow
+
+    def paths_differing_from(self, rev: str) -> Optional[List[str]]:
+        """Working-tree paths whose content is not what *rev* holds.
+
+        Both directions of difference matter: files edited since the
+        revision, and files git does not yet track. Anything else is
+        byte-identical to the revision, so the revision search has
+        already answered for it - which makes this both the fast path
+        and the precise one.
+
+        None means "too many to enumerate": a revision years back
+        differs in thousands of files, and a pathspec list that long is
+        worse than searching the tree.
+        """
+        key = rev
+        if key not in self._diff_cache:
+            changed = self._run(
+                "diff", "--name-only", "-z", rev, "--", check=False
+            ).split("\0")
+            untracked = self._run(
+                "ls-files", "--others", "--exclude-standard", "-z",
+                check=False,
+            ).split("\0")
+            paths = sorted({p for p in changed + untracked if p})
+            self._diff_cache[key] = (
+                None if len(paths) > MAX_WORKTREE_PATHSPECS else paths
+            )
+        return self._diff_cache[key]
+
+    def grep_worktree(
+        self, word: str, excludes: Optional[List[str]] = None,
+        paths: Optional[List[str]] = None,
+    ) -> List[Tuple[str, int, str]]:
+        """Whole-word search of the working tree rather than a revision.
+
+        Takes the same exclusions as :meth:`grep_word` and for the same
+        reason: a report stored inside the repository must never be
+        allowed to corroborate itself, and the working tree is exactly
+        where an uncommitted report file lives.
+        """
+        word = _prepare_needle(word)
+        args = ["grep", "-n", "-w", "-I", "-z", "--fixed-strings", "-e", word]
+        pathspecs = self._worktree_pathspecs(paths, excludes)
+        if pathspecs:
+            args += ["--", *pathspecs]
+        out = self._run(*args, check=False)
         return self._parse_grep(out, None)
+
+    def grep_worktree_line(
+        self, needle: str, excludes: Optional[List[str]] = None,
+        paths: Optional[List[str]] = None,
+    ) -> List[Tuple[str, int, str]]:
+        """Exact fixed-string search of the working tree."""
+        needle = _prepare_needle(needle)
+        args = ["grep", "-n", "-I", "-z", "--fixed-strings", "-e", needle]
+        pathspecs = self._worktree_pathspecs(paths, excludes)
+        if pathspecs:
+            args += ["--", *pathspecs]
+        out = self._run(*args, check=False)
+        return self._parse_grep(out, None)
+
+    def _worktree_pathspecs(
+        self, paths: Optional[List[str]], excludes: Optional[List[str]],
+    ) -> List[str]:
+        specs = list(paths or [])
+        for exc in excludes or []:
+            specs.append(f":(exclude){exc}")
+        if specs and not paths:
+            # Exclusions alone need something to subtract from, or git
+            # greps nothing at all.
+            specs.insert(0, ":/")
+        return specs
+
+    def head_sha(self) -> Optional[str]:
+        """The revision the working tree actually holds, if any.
+
+        A checkout is only evidence about the revision it is on. Without
+        this, a tree sitting several releases ahead of the pinned --rev
+        looked like uncommitted work in progress.
+        """
+        if self._head is None:
+            try:
+                self._head = self._run("rev-parse", "HEAD").strip()
+            except GitError:
+                self._head = ""
+        return self._head or None
 
     # ----------------------------------------------------------------- grep
 

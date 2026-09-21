@@ -288,3 +288,68 @@ def test_a_backwards_range_keeps_only_its_start():
     assert len(fl) == 1
     assert fl[0].extra["line"] == 90
     assert "end_line" not in fl[0].extra
+
+
+def test_a_range_is_not_swallowed_by_its_own_start():
+    """The dedup key ignored the end of a range, so a citation that
+    started where an earlier one did vanished - taking the fabricated
+    end with it, unchecked."""
+    claims, _ = extract_claims(
+        "First src/http.c:10, then the range src/http.c:10-9000.\n"
+    )
+    positions = {
+        (c.extra.get("line"), c.extra.get("end_line"))
+        for c in claims_of(claims, ClaimType.FILE_LINE)
+    }
+    assert positions == {(10, None), (10, 9000)}
+
+
+def test_column_anchored_permalinks_keep_their_span():
+    """GitHub emits #L42C5-L60C9 when the reader selects part of a line.
+
+    With nowhere to put the column, the whole position failed to match
+    and the citation degraded to a bare file - so a fabricated span in a
+    real file graded VERIFIED as a file.
+    """
+    claims, _ = extract_claims(
+        "See src/http.c#L42C5-L60C9 and src/http.c#L7C2.\n"
+    )
+    positions = {
+        (c.extra.get("line"), c.extra.get("end_line"))
+        for c in claims_of(claims, ClaimType.FILE_LINE)
+    }
+    assert positions == {(42, 60), (7, None)}
+
+
+def test_a_range_with_an_unusable_end_is_not_narrowed_to_its_start():
+    """Keeping the start of "src/http.c:1-9999999999" threw away the only
+    part of the citation that was wrong, and printed "src/http.c:1" as
+    if that were what the report said."""
+    claims, _ = extract_claims("Range src/http.c:1-9999999999 is affected.\n")
+    assert not claims_of(claims, ClaimType.FILE_LINE)
+    assert values(claims, ClaimType.FILE) == {"src/http.c"}
+
+
+def test_a_range_with_an_unusable_start_keeps_nothing_either():
+    claims, _ = extract_claims("Range src/http.c:0-500 is affected.\n")
+    assert not claims_of(claims, ClaimType.FILE_LINE)
+    assert values(claims, ClaimType.FILE) == {"src/http.c"}
+
+
+def test_a_third_partys_version_range_is_attributed_to_it():
+    """The product guard lived on one spelling of one pattern, so
+    "Ubuntu versions 22.04 through 24.04" was checked against this
+    project's release tags."""
+    claims, _ = extract_claims(
+        "Tested on Ubuntu versions 22.04 through 24.04.\n"
+    )
+    version = claims_of(claims, ClaimType.VERSION)[0]
+    assert version.extra["product"] == "Ubuntu"
+
+
+def test_our_own_version_range_is_not_attributed_to_a_verb():
+    """A product word sits before "versions", so the trigger verb was
+    captured as the product name."""
+    claims, _ = extract_claims("The flaw affects versions 1.0.0 through 1.1.0.\n")
+    version = claims_of(claims, ClaimType.VERSION)[0]
+    assert "product" not in version.extra
