@@ -78,3 +78,41 @@ def test_every_claim_type_appears_in_both_documents():
         label = DOC_LABELS[claim_type.value]
         assert label in readme, f"README omits {claim_type.value}"
         assert label in page, f"the project page omits {claim_type.value}"
+
+
+def test_the_readme_lists_every_action_output():
+    """The README named five of the action's six outputs for weeks.
+
+    A consumer gating on an output the README never mentions has no
+    reason to look for it, and the list is mechanically checkable.
+    """
+    action = (ROOT / "action.yml").read_text(encoding="utf-8")
+    block = action.split("\noutputs:", 1)[1].split("\nruns:", 1)[0]
+    declared = re.findall(r"^  ([a-z][a-z-]*):", block, re.MULTILINE)
+    assert declared, "could not read the action's outputs"
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    sentence = next(
+        line for line in readme.splitlines()
+        if "action exposes" in line
+    )
+    for name in declared:
+        assert f"`{name}`" in sentence, f"README omits the {name} output"
+
+
+def test_the_project_page_does_not_describe_the_replaced_worktree_rule():
+    """The page kept saying "if your checkout is dirty" after the code
+    stopped gating on dirtiness.
+
+    The working-tree check now fires whenever HEAD is a different
+    revision from --rev, which is the ordinary case for a maintainer on
+    main grading an older tag - and the page described none of it. This
+    pins the specific sentence that went stale rather than trying to
+    diff prose against code in general.
+    """
+    verify = (ROOT / "src" / "vulnvet" / "verify.py").read_text(
+        encoding="utf-8"
+    )
+    # Only meaningful while the check really is revision-based.
+    assert "_worktree_differs" in verify
+    page = (ROOT / "docs" / "index.html").read_text(encoding="utf-8").lower()
+    assert "checkout is dirty" not in page

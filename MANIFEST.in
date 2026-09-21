@@ -5,3 +5,7 @@ include SECURITY.md
 include action.yml
 recursive-include tests *.py
 recursive-include examples *.md
+# tests/test_docs_match_code.py reads docs/index.html, so an sdist that
+# ships the suite without it fails two tests out of the tarball - the
+# first thing a distro packager runs.
+recursive-include docs *
