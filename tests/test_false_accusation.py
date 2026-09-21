@@ -310,3 +310,70 @@ overflow happens.
     assessment = dossier.assessment()
     assert assessment.grade == "PARTIAL GROUNDING"
     assert "frobnicate_widget" in assessment.summary
+
+
+def test_a_reflowed_quote_of_real_code_is_never_a_fabrication(fixture_repo):
+    """The case the previous test only half covered.
+
+    Re-indenting survives the exact search, because quoted lines are
+    stripped before matching. Two other things a reporter does to code
+    on its way into a ticket do not: a mail client or a narrow text box
+    re-wraps a long signature onto one line, and a formatter changes
+    the spacing inside a line. When that happens to every sampled line
+    at once, nothing matched - and a quote with nothing matching was
+    graded "the report quotes code this codebase does not contain", a
+    strong fabrication signal, about code sitting in the very file the
+    report names.
+
+    Reproduced against real curl source before the fix: three genuine
+    lines of lib/dynbuf.c, pasted with the signature unwrapped and the
+    spaces dropped from `len + indx + 1`, came back NOT FOUND.
+    """
+    text = """\
+The relevant code from src/http.c:
+
+```c
+static int parse_header_line(struct request *req, const char *line, size_t len) {
+    if (len>MAX_HEADER)
+        return -1;
+    req->header_count++ ;
+}
+```
+"""
+    dossier = vet(text, fixture_repo)
+    quoted = [
+        f for f in dossier.findings if f.claim.type is ClaimType.QUOTED_CODE
+    ]
+    assert len(quoted) == 1
+    assert quoted[0].verdict is Verdict.MISMATCH
+    assert not quoted[0].is_strong_signal
+    assert dossier.strong_signals == []
+    # The evidence has to say what actually happened, or the maintainer
+    # is left with a failure and no way to read it.
+    assert "whitespace" in quoted[0].evidence
+    assert "src/http.c" in quoted[0].evidence
+
+
+def test_the_reflow_check_still_names_the_file_when_the_report_does_not(
+    fixture_repo,
+):
+    """A reporter who quotes code without saying which file it came from
+    is being terse, not evasive - the tool can still find it."""
+    text = """\
+The vulnerable code looks like this:
+
+```c
+static int parse_header_line(struct request *req, const char *line, size_t len) {
+    if (len>MAX_HEADER)
+        return -1;
+    req->header_count++ ;
+}
+```
+"""
+    dossier = vet(text, fixture_repo)
+    quoted = [
+        f for f in dossier.findings if f.claim.type is ClaimType.QUOTED_CODE
+    ]
+    assert len(quoted) == 1
+    assert quoted[0].verdict is Verdict.MISMATCH
+    assert "src/http.c" in quoted[0].evidence

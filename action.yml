@@ -66,14 +66,29 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
-
     - name: Install vulnvet
       shell: bash
-      run: pip install --quiet "${{ github.action_path }}"
+      # Into a throwaway venv under RUNNER_TEMP, not the caller's
+      # interpreter. setup-python inside a composite action changes PATH
+      # for the rest of the job, so a workflow that had set up its own
+      # Python silently got ours for every later step - and our pip
+      # install landed in it. The venv is invoked by absolute path and
+      # as `python -m vulnvet`, which needs no console script and so
+      # works the same on a Windows runner.
+      env:
+        VULNVET_SOURCE: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        venv="$RUNNER_TEMP/vulnvet-venv"
+        python3 -m venv "$venv"
+        if [ -x "$venv/bin/python" ]; then
+          python="$venv/bin/python"
+        else
+          python="$venv/Scripts/python.exe"
+        fi
+        "$python" -m pip install --quiet --upgrade pip
+        "$python" -m pip install --quiet "$VULNVET_SOURCE"
+        echo "VULNVET_PYTHON=$python" >> "$GITHUB_ENV"
 
     - name: Vet the report
       id: run
@@ -88,6 +103,7 @@ runs:
         VULNVET_REV: ${{ inputs.rev }}
         VULNVET_DOSSIER: ${{ inputs.dossier-path }}
         VULNVET_FAIL: ${{ inputs.fail-on-ungrounded }}
+        VULNVET_RESULT: ${{ runner.temp }}/vulnvet.json
       run: |
         set -euo pipefail
 
@@ -109,14 +125,18 @@ runs:
         # JSON drives the outputs; markdown is the human deliverable. Both
         # runs are pure reads, so running twice is cheap and keeps parsing
         # out of the shell.
-        vulnvet "$report_file" "${args[@]}" --format json --exit-zero > vulnvet.json
-        vulnvet "$report_file" "${args[@]}" --format markdown --exit-zero \
-          -o "$VULNVET_DOSSIER"
+        # Into RUNNER_TEMP: a bare relative path writes into the
+        # caller's checked-out repository, where a later `git add -A`
+        # would commit it.
+        "$VULNVET_PYTHON" -m vulnvet "$report_file" "${args[@]}" \
+          --format json --exit-zero > "$VULNVET_RESULT"
+        "$VULNVET_PYTHON" -m vulnvet "$report_file" "${args[@]}" \
+          --format markdown --exit-zero -o "$VULNVET_DOSSIER"
 
-        python - <<'PY' >> "$GITHUB_OUTPUT"
+        "$VULNVET_PYTHON" - <<'PY' >> "$GITHUB_OUTPUT"
         import json, os, re
 
-        with open("vulnvet.json") as fh:
+        with open(os.environ["VULNVET_RESULT"]) as fh:
             data = json.load(fh)
         counts = data["counts"]
 
@@ -143,7 +163,7 @@ runs:
         cat "$VULNVET_DOSSIER" >> "$GITHUB_STEP_SUMMARY"
 
         if [ "$VULNVET_FAIL" = "true" ]; then
-          ungrounded=$(python -c "import json;d=json.load(open('vulnvet.json'));print(d['counts']['not_found']+d['counts']['mismatch'])")
+          ungrounded=$("$VULNVET_PYTHON" -c "import json,os;d=json.load(open(os.environ['VULNVET_RESULT']));print(d['counts']['not_found']+d['counts']['mismatch'])")
           if [ "$ungrounded" -gt 0 ]; then
             echo "vulnvet: $ungrounded claim(s) failed to ground" >&2
             exit 1
