@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime
 import difflib
 import re
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from .claims import Claim, ClaimType, Dossier, Finding, Verdict
 from .extract import POC_FILENAME_RE
@@ -115,6 +115,10 @@ def _is_bare_poc_attachment(path: str) -> bool:
     return "/" not in path and bool(POC_FILENAME_RE.match(path))
 
 
+#: "not computed yet", distinct from "computed, and there are none".
+_UNSET = object()
+
+
 #: Where C preprocessor token pasting can actually occur.
 _C_FAMILY_EXTS = (
     ".c", ".h", ".cc", ".cpp", ".cxx", ".c++", ".hpp", ".hh", ".hxx",
@@ -159,6 +163,7 @@ class Verifier:
         #: learned from stack frames that do resolve into the tree.
         self.build_roots: set = set()
         self._uses_token_pasting: Optional[bool] = None
+        self._wt_paths: Any = _UNSET
         self._tree = repo.tree_files(rev)
         self._tree_set = set(self._tree)
         self._basenames: dict = {}
@@ -265,18 +270,27 @@ class Verifier:
             return self._basenames[close[0]][0], False
         return None
 
-    def _worktree_differs(self) -> bool:
-        """Can the checkout hold anything the pinned revision does not?
+    def _worktree_paths(self) -> Optional[List[str]]:
+        """Which working-tree paths are not what the revision holds.
 
-        Two ways: uncommitted work, or a HEAD that simply is not the
-        revision being graded. Gating on dirtiness alone missed the
-        second, so a tree several releases ahead of an old --rev was
-        never consulted at all.
+        Two ways a checkout can differ: uncommitted work, or a HEAD that
+        simply is not the revision being graded - the ordinary case for
+        a maintainer on main grading an older --rev. Gating on dirtiness
+        alone missed the second entirely.
+
+        Every other file is byte-identical to the revision, so the
+        revision search has already answered for it. Narrowing to these
+        paths is what keeps the check from doubling the cost of every
+        NOT FOUND. ``None`` means the list was too long to be worth
+        passing to git, and the whole tree is searched instead.
         """
-        head = self.repo.head_sha()
-        if head and not (head.startswith(self.sha) or self.sha.startswith(head)):
-            return True
-        return self.repo.is_dirty()
+        if self._wt_paths is _UNSET:
+            self._wt_paths = self.repo.paths_differing_from(self.sha)
+        return self._wt_paths
+
+    def _worktree_differs(self) -> bool:
+        paths = self._worktree_paths()
+        return paths is None or bool(paths)
 
     def _uncommitted_note(self, kind: str) -> str:
         """Evidence text when the checkout, but not the revision, has it.
@@ -325,8 +339,11 @@ class Verifier:
         if not lines or not self._worktree_differs():
             return False
         try:
+            paths = self._worktree_paths()
             return all(
-                self.repo.grep_worktree_line(line, excludes=self.excludes)
+                self.repo.grep_worktree_line(
+                    line, excludes=self.excludes, paths=paths,
+                )
                 for line in lines
             )
         except GitError:
@@ -336,7 +353,9 @@ class Verifier:
         if not self._worktree_differs():
             return False
         try:
-            return bool(self.repo.grep_worktree(name, excludes=self.excludes))
+            return bool(self.repo.grep_worktree(
+                name, excludes=self.excludes, paths=self._worktree_paths(),
+            ))
         except GitError:
             return False
 

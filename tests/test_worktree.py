@@ -354,3 +354,30 @@ def test_no_re_run_is_suggested_when_head_already_is_that_release(
     notes = " ".join(dossier.notes)
     assert "--rev 1.1.0" not in notes
     assert "--rev <version>" in notes
+
+
+def test_only_the_files_that_differ_are_searched(dirty_repo):
+    """The exculpatory search is narrowed to what actually differs.
+
+    Every other file is byte-identical to the revision, so the revision
+    search has already answered for it - and searching the whole tree
+    again doubled the cost of every NOT FOUND verdict.
+    """
+    repo = Repo(dirty_repo)
+    paths = repo.paths_differing_from(repo.resolve_rev("HEAD"))
+    assert set(paths) == {"src/http.c", "src/newfile.c"}
+
+
+def test_an_ignored_file_is_not_a_difference(dirty_repo):
+    import os
+
+    with open(os.path.join(dirty_repo, ".gitignore"), "w", encoding="utf-8") as fh:
+        fh.write("out/\n")
+    os.mkdir(os.path.join(dirty_repo, "out"))
+    with open(os.path.join(dirty_repo, "out", "built.c"), "w",
+              encoding="utf-8") as fh:
+        fh.write("int built(void) { return 0; }\n")
+
+    repo = Repo(dirty_repo)
+    paths = repo.paths_differing_from(repo.resolve_rev("HEAD"))
+    assert not any(p.startswith("out/") for p in paths)

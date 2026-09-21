@@ -44,6 +44,12 @@ MAX_NEEDLE_CHARS = 8192
 MAX_BLOB_CACHE = 64
 MAX_BLOB_CACHE_CHARS = 4_000_000
 
+#: How many differing paths are still worth naming individually when
+#: searching the working tree. Past this, the revision being graded is
+#: so far from the checkout that a pathspec list costs more than the
+#: search it narrows.
+MAX_WORKTREE_PATHSPECS = 2000
+
 
 def _normalize_version_text(text: str) -> str:
     """Reduce a tag or version string to a comparable dotted core.
@@ -98,6 +104,7 @@ class Repo:
         self._head: Optional[str] = None
         self._worktree_files: Optional[set] = None
         self._shallow: Optional[bool] = None
+        self._diff_cache: Dict[str, Optional[List[str]]] = {}
         self._rev_cache: Dict[str, Optional[str]] = {}
         try:
             out = self._run("rev-parse", "--is-inside-work-tree")
@@ -352,8 +359,37 @@ class Repo:
             self._shallow = out.strip() == "true"
         return self._shallow
 
+    def paths_differing_from(self, rev: str) -> Optional[List[str]]:
+        """Working-tree paths whose content is not what *rev* holds.
+
+        Both directions of difference matter: files edited since the
+        revision, and files git does not yet track. Anything else is
+        byte-identical to the revision, so the revision search has
+        already answered for it - which makes this both the fast path
+        and the precise one.
+
+        None means "too many to enumerate": a revision years back
+        differs in thousands of files, and a pathspec list that long is
+        worse than searching the tree.
+        """
+        key = rev
+        if key not in self._diff_cache:
+            changed = self._run(
+                "diff", "--name-only", "-z", rev, check=False
+            ).split("\0")
+            untracked = self._run(
+                "ls-files", "--others", "--exclude-standard", "-z",
+                check=False,
+            ).split("\0")
+            paths = sorted({p for p in changed + untracked if p})
+            self._diff_cache[key] = (
+                None if len(paths) > MAX_WORKTREE_PATHSPECS else paths
+            )
+        return self._diff_cache[key]
+
     def grep_worktree(
         self, word: str, excludes: Optional[List[str]] = None,
+        paths: Optional[List[str]] = None,
     ) -> List[Tuple[str, int, str]]:
         """Whole-word search of the working tree rather than a revision.
 
@@ -364,7 +400,7 @@ class Repo:
         """
         word = _prepare_needle(word)
         args = ["grep", "-n", "-w", "-I", "-z", "--fixed-strings", "-e", word]
-        pathspecs = self._pathspecs(None, excludes)
+        pathspecs = self._worktree_pathspecs(paths, excludes)
         if pathspecs:
             args += ["--", *pathspecs]
         out = self._run(*args, check=False)
@@ -372,15 +408,28 @@ class Repo:
 
     def grep_worktree_line(
         self, needle: str, excludes: Optional[List[str]] = None,
+        paths: Optional[List[str]] = None,
     ) -> List[Tuple[str, int, str]]:
         """Exact fixed-string search of the working tree."""
         needle = _prepare_needle(needle)
         args = ["grep", "-n", "-I", "-z", "--fixed-strings", "-e", needle]
-        pathspecs = self._pathspecs(None, excludes)
+        pathspecs = self._worktree_pathspecs(paths, excludes)
         if pathspecs:
             args += ["--", *pathspecs]
         out = self._run(*args, check=False)
         return self._parse_grep(out, None)
+
+    def _worktree_pathspecs(
+        self, paths: Optional[List[str]], excludes: Optional[List[str]],
+    ) -> List[str]:
+        specs = list(paths or [])
+        for exc in excludes or []:
+            specs.append(f":(exclude){exc}")
+        if specs and not paths:
+            # Exclusions alone need something to subtract from, or git
+            # greps nothing at all.
+            specs.insert(0, ":/")
+        return specs
 
     def head_sha(self) -> Optional[str]:
         """The revision the working tree actually holds, if any.
