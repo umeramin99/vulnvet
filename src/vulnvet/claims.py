@@ -290,6 +290,19 @@ class Dossier:
         )
 
 
+#: Every grade :meth:`Dossier.assessment` can return. action.yml and the
+#: README document this set for workflows that gate on it, and a test
+#: pins all three together so a new grade cannot appear in one only.
+GRADES = (
+    "FULLY GROUNDED",
+    "PARTIAL GROUNDING",
+    "SEVERE GROUNDING FAILURES",
+    "COVERAGE INCOMPLETE",
+    "UNCHECKABLE",
+    "NO CHECKABLE CLAIMS",
+)
+
+
 @dataclass
 class Assessment:
     grade: str
