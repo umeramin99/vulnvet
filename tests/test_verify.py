@@ -449,3 +449,17 @@ def test_a_tilde_repo_path_is_expanded(fixture_repo, monkeypatch):
     monkeypatch.setenv("USERPROFILE", parent)  # Windows
     repo = Repo(os.path.join("~", name))
     assert repo.resolve_rev("v1.0.0")
+
+
+def test_a_tilde_path_still_knows_it_is_the_repository_root(
+    fixture_repo, monkeypatch
+):
+    """The subdirectory was measured from the raw argument, so "~" made
+    it relative to the wrong root - a different drive, on Windows."""
+    import os
+
+    parent, name = os.path.split(fixture_repo.rstrip("/\\"))
+    monkeypatch.setenv("HOME", parent)
+    monkeypatch.setenv("USERPROFILE", parent)  # Windows
+    repo = Repo(os.path.join("~", name))
+    assert repo.subdir == ""

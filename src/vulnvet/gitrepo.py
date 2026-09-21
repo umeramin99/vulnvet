@@ -119,10 +119,18 @@ class Repo:
         # disagree. Anchor everything to the top level.
         top = self._run("rev-parse", "--show-toplevel").strip()
         if top:
-            self.subdir = os.path.relpath(
-                os.path.abspath(path), top
-            ).replace(os.sep, "/")
-            if self.subdir == ".":
+            # Against self.path, not the raw argument: an unexpanded "~"
+            # produced a subdirectory relative to the wrong root, and on
+            # Windows a different drive letter entirely. git reports the
+            # toplevel with symlinks already resolved, so resolve ours
+            # too or the two cannot be compared.
+            try:
+                self.subdir = os.path.relpath(
+                    os.path.realpath(self.path), os.path.realpath(top)
+                ).replace(os.sep, "/")
+            except ValueError:  # different drives on Windows
+                self.subdir = ""
+            if self.subdir == "." or self.subdir.startswith(".."):
                 self.subdir = ""
             self.path = top
         else:
