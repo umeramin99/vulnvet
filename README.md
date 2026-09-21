@@ -7,7 +7,11 @@
 
 **Ground a vulnerability report's claims against the actual codebase — before you spend hours triaging it.**
 
-📄 **[umeramin99.github.io/vulnvet](https://umeramin99.github.io/vulnvet/)** — what it does, with a real dossier you can flip between a fabricated and an honest report.
+📄 Two real reports ship with the repo and take 30 seconds to check yourself:
+[`examples/curl-slop-report.md`](examples/curl-slop-report.md), a fabrication in
+the genre that flooded curl's bounty, and
+[`examples/curl-grounded-report.md`](examples/curl-grounded-report.md), an honest
+one — [see how](#try-it-on-the-curl-example).
 
 You get a report. It's confident, well-formatted, and cites `ngtcp2_http3_handle_priority_frame()` in `lib/vquic/ngtcp2.c:1042`. Disproving it means checking out the right tag, grepping for the function, opening the file, counting lines, checking whether those versions ever existed.
 
@@ -189,7 +193,7 @@ jobs:
             });
 ```
 
-The action exposes `grade`, `strong-signals`, `not-found`, `verified`, and `dossier-path` as outputs, so you can gate on them — e.g. only comment when `strong-signals > 0`, or label the issue instead of commenting.
+The action exposes `grade`, `strong-signals`, `not-found`, `mismatch`, `verified`, and `dossier-path` as outputs, so you can gate on them — e.g. only comment when `strong-signals > 0`, or label the issue instead of commenting.
 
 ## Use as a library
 
@@ -214,7 +218,7 @@ for finding in dossier.strong_signals:
 
 - **Macro-generated and code-generated symbols** may not appear as literal text in the tree, so a legitimate citation can grade NOT FOUND. curl really does build `SSL_RSA_WITH_RC4_128_MD5` out of `SSL_##num_wo_prefix`, and no grep will find it. vulnvet flags the risk when it sees `##` in the tree, but check the evidence line before acting.
 - **Grep-level symbol checking** doesn't distinguish a definition from a comment mentioning the name. Where vulnvet can spot a definition it says so.
-- **Reformatted quotes** — a reporter who re-indents or line-wraps code they copied will score lower on the quoted-code check than one who pastes verbatim. That lands on MISMATCH, never on a fabrication signal.
+- **Reformatted quotes** — a reporter who re-indents, re-wraps or reformats code on its way into a ticket will score lower on the quoted-code check than one who pastes verbatim. When the exact match fails, the quote is compared again with whitespace removed: code that turns out to be yours with its spacing changed lands on MISMATCH and says so, naming the file it matched. A fabrication signal is reserved for a quote that is absent either way.
 - **Shallow clones** hide tags and old commits. vulnvet checks whether the clone really is shallow before blaming it, and says which of "shallow", "no tags at all" and "too few tags to tell" applies, rather than pretending to know. Use `fetch-depth: 0` in CI. A *partial* clone (`--filter=blob:none`) is worse than a shallow one here: searches refetch blobs on demand, so a run that takes a second locally can take minutes.
 - **Search results are capped** at 50 hits per query, so evidence lines say "50+" rather than an exact count, and vulnvet won't assert "only in documentation" off a truncated list.
 - **Padding is the obvious attack**, and it's narrowed rather than solved. Listing real filenames is free, so only claims that show the reporter actually read the code — symbols, stack frames, quoted code, `file:line` — count toward "well grounded"; those claims also keep their slots when a report exceeds the extraction budget, and anything the budget did skip is named in the dossier and blocks a clean grade. A fabricated citation is named in the summary even when the grade doesn't escalate. But someone willing to cite genuinely real symbols around a fabricated conclusion will still score well, which is why the dossier gives per-claim evidence: the counts are never the answer on their own.

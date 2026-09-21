@@ -209,3 +209,51 @@ def test_a_symbol_only_in_release_notes_is_not_corroborated(fixture_repo):
     assert not _is_source_path("RELEASE-NOTES")
     assert not _is_source_path("docs/libcurl/symbols-in-versions")
     assert not _is_source_path("docs/KNOWN_BUGS")
+
+
+def test_ignoring_whitespace_does_not_launder_an_invented_quote(fixture_repo):
+    """The reflow check must not become a way through.
+
+    Quoting one real line and inventing the rest is the obvious abuse:
+    if a single normalised match were enough, "reformatted" would
+    excuse any fabrication that opened with a genuine signature.
+    """
+    text = """\
+The vulnerable code in src/http.c looks like this:
+
+```c
+static int parse_header_line(struct request *req, const char *line, size_t len) {
+    ctx->weight = frame->weight * 256 ;
+    return apply_priority_update(ctx) ;
+    sanitize_priority_frame(ctx, len) ;
+}
+```
+"""
+    dossier = vet(text, fixture_repo)
+    quoted = [
+        f for f in dossier.findings if f.claim.type is ClaimType.QUOTED_CODE
+    ]
+    assert len(quoted) == 1
+    assert quoted[0].verdict is Verdict.NOT_FOUND
+    assert quoted[0].is_strong_signal
+
+
+def test_a_wholly_invented_quote_is_still_a_fabrication(fixture_repo):
+    text = """\
+The vulnerable code in src/http.c looks like this:
+
+```c
+static int sanitize_priority_frame(struct frame_ctx *ctx, size_t weight)
+{
+    ctx->weight = weight * 256;
+    return apply_priority_update(ctx, ctx->weight);
+}
+```
+"""
+    dossier = vet(text, fixture_repo)
+    quoted = [
+        f for f in dossier.findings if f.claim.type is ClaimType.QUOTED_CODE
+    ]
+    assert len(quoted) == 1
+    assert quoted[0].verdict is Verdict.NOT_FOUND
+    assert quoted[0].is_strong_signal

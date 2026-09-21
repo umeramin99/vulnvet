@@ -4,7 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vulnvet"
-version = "0.1.0"
+# Single-sourced from vulnvet.__version__, which is what `vulnvet
+# --version` prints. Declared in both places, a release bump that
+# touched only one would have the CLI and PyPI reporting different
+# numbers, with nothing in the suite to catch it.
+dynamic = ["version"]
 description = "Ground the claims in a vulnerability report against the actual codebase before you burn hours triaging it."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -26,19 +30,37 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
     "Topic :: Security",
     "Topic :: Software Development :: Quality Assurance",
 ]
 
 [project.urls]
 Homepage = "https://github.com/umeramin99/vulnvet"
+Documentation = "https://umeramin99.github.io/vulnvet/"
+Changelog = "https://github.com/umeramin99/vulnvet/blob/main/CHANGELOG.md"
 Issues = "https://github.com/umeramin99/vulnvet/issues"
+Source = "https://github.com/umeramin99/vulnvet"
 
 [project.scripts]
 vulnvet = "vulnvet.cli:main"
 
+[tool.setuptools.dynamic]
+version = { attr = "vulnvet.__version__" }
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# PEP 561: without the marker, every annotation in this package is
+# invisible to mypy and pyright, and the documented `from vulnvet import
+# vet` API reads as untyped downstream.
+[tool.setuptools.package-data]
+vulnvet = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -119,6 +119,34 @@ def _is_bare_poc_attachment(path: str) -> bool:
 _UNSET = object()
 
 
+#: How much code a quoted line has to carry, once its whitespace is
+#: gone, before finding it proves anything: "}else{" occurs in every C
+#: file ever written.
+MIN_REFLOW_CHARS = 20
+
+#: How many files a quote with no stated file may be normalised against.
+#: Without a bound, one claim could read a large part of the tree.
+MAX_REFLOW_CANDIDATES = 5
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+_QUOTE_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{3,}")
+
+
+def _squash(text: str) -> str:
+    """Drop whitespace entirely, so only the code itself is compared.
+
+    Not "collapse runs to one space": that still fails the two
+    commonest ways a pasted quote differs from its source. Dropping the
+    newlines is what lets a wrapped function signature match the two
+    lines it was copied from, and dropping the spaces inside a line is
+    what lets ``len+indx+1`` match ``len + indx + 1``. What survives is
+    the sequence of non-whitespace characters, which is the same for
+    the same code however it was laid out.
+    """
+    return _WHITESPACE_RE.sub("", text)
+
+
 #: Where C preprocessor token pasting can actually occur.
 _C_FAMILY_EXTS = (
     ".c", ".h", ".cc", ".cpp", ".cxx", ".c++", ".hpp", ".hh", ".hxx",
@@ -931,6 +959,77 @@ class Verifier:
 
     # --------------------------------------------------------- QUOTED_CODE
 
+    def _reflow_candidates(self, lines: List[str], hint: Optional[str]) -> List[str]:
+        """Files worth re-reading with whitespace ignored.
+
+        The file the report names, when it named one. Otherwise the
+        quote's most distinctive identifier picks a bounded handful:
+        normalising the whole tree for one claim is not a trade this
+        tool should make.
+        """
+        resolved = self._resolve_path(hint) if hint else None
+        if resolved:
+            return [resolved]
+        best = ""
+        for line in lines:
+            for token in _QUOTE_IDENT_RE.findall(line):
+                if len(token) > len(best):
+                    best = token
+        if len(best) < 6:
+            return []
+        files: List[str] = []
+        for path, _, _ in self.repo.grep_word(
+            self.sha, best, excludes=self.excludes
+        ):
+            if path not in files and _is_source_path(path):
+                files.append(path)
+            if len(files) >= MAX_REFLOW_CANDIDATES:
+                break
+        return files
+
+    def _reflowed_match(
+        self, lines: List[str], hint: Optional[str]
+    ) -> Optional[Tuple[int, int, str]]:
+        """(matched, checkable, path) for a quote that is real but reformatted.
+
+        The exact search is the right default - a verbatim quote is
+        evidence the reporter had the file open. But a reporter who
+        pastes into a ticket, a mail client or a formatter changes the
+        spacing and joins wrapped lines, and then every line misses at
+        once. That was being reported as "the report quotes code this
+        codebase does not contain" - the strongest thing this tool says
+        - about code sitting in the file the report names.
+
+        Ignoring whitespace answers the question the exact search
+        cannot: is this the project's own code, reformatted? Invented
+        code still matches nothing, so the accusation survives where it
+        is earned.
+        """
+        needles = [
+            collapsed for collapsed in (_squash(line) for line in lines)
+            if len(collapsed) >= MIN_REFLOW_CHARS
+        ]
+        if not needles:
+            return None
+        best: Optional[Tuple[int, int, str]] = None
+        for path in self._reflow_candidates(lines, hint):
+            content = self.repo.read_file(self.sha, path)
+            if content is None:
+                continue
+            haystack = _squash(content)
+            matched = sum(1 for needle in needles if needle in haystack)
+            if matched and (best is None or matched > best[0]):
+                best = (matched, len(needles), path)
+        return best
+
+    @staticmethod
+    def _is_reflow(best: Optional[Tuple[int, int, str]]) -> bool:
+        """Enough of the quote to be reformatting rather than coincidence."""
+        if not best:
+            return False
+        matched, checkable, _ = best
+        return matched >= max(1, (checkable + 1) // 2)
+
     def _verify_quoted_code(self, claim: Claim) -> Finding:
         lines: List[str] = claim.extra.get("lines", [])
         hint = claim.extra.get("hint_path")
@@ -997,12 +1096,40 @@ class Verifier:
                     claim, Verdict.MISMATCH,
                     self._uncommitted_note(f"this {what}"),
                 )
+            reflowed = self._reflowed_match(lines, hint)
+            if self._is_reflow(reflowed):
+                matched, checkable, path = reflowed
+                return Finding(
+                    claim, Verdict.MISMATCH,
+                    f"none of the {len(lines)} sampled lines of {what} match "
+                    f"the tree verbatim at {self.rev}, but {matched} of "
+                    f"{checkable} appear in {path} once whitespace is "
+                    f"ignored - this reads as code the reporter copied and "
+                    f"then re-indented, re-wrapped or reformatted, not as "
+                    f"code that does not exist{hint_note}",
+                    suggestion=(
+                        f"compare against {path} yourself; the quote is the "
+                        f"project's own code with its spacing changed"
+                    ),
+                )
             return Finding(
                 claim,
                 Verdict.NOT_FOUND,
                 f"0/{len(lines)} sampled lines of {what} appear anywhere in "
                 f"the tree at {self.rev}{hint_note} - the report quotes code "
                 "this codebase does not contain",
+            )
+        reflowed = self._reflowed_match(missing, hint)
+        if self._is_reflow(reflowed):
+            matched, checkable, path = reflowed
+            return Finding(
+                claim,
+                Verdict.MISMATCH,
+                f"{found}/{len(lines)} sampled lines of {what} found "
+                f"verbatim at {self.rev}{where}{hint_note}; {matched} of the "
+                f"{checkable} that did not are in {path} once whitespace is "
+                f"ignored, so the quote reads as reformatted rather than "
+                f"invented.{missing_note}",
             )
         return Finding(
             claim,
