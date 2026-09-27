@@ -227,25 +227,6 @@ for finding in dossier.strong_signals:
 
 vulnvet also treats the report as hostile input, because it is: report text can't reach `git` as a command-line option, can't inject ANSI escapes into the dossier to forge verdict lines, can't corrupt the markdown table, and can't hang the tool. Those properties have tests that fail when the guard is removed.
 
-## How this was built
-
-Most of this repository was written by an AI coding agent working under my
-direction and review. The commit trailers say so, and I would rather tell you
-here than have you find it there.
-
-On this project the disclosure matters, so here is the part that actually
-answers it: **vulnvet never calls a model.** Every verdict is a grep, a
-`git show`, or a line count. The same report at the same revision always
-produces the same dossier, and each verdict prints the evidence it came from,
-so you can re-derive any of them by hand in seconds. A tool for catching
-unverifiable claims would be a poor joke if you had to take its own on faith.
-
-The constraints it was built under — fail toward `UNCHECKABLE`, never accuse on
-a single bad citation, never grade the reporter's own code — are written down in
-[`CONTRIBUTING.md`](CONTRIBUTING.md), and enforced in
-[`tests/test_false_accusation.py`](tests/test_false_accusation.py) and
-[`tests/test_evasion.py`](tests/test_evasion.py).
-
 ## Contributing
 
 Bug reports about *false accusations* — a legitimate report vulnvet grades unfairly — are the highest-value contributions. Please include the report text and the repository/revision.
