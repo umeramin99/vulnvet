@@ -25,7 +25,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Check the page is self-contained
         # The site must not depend on a CDN staying up, and must not leak
@@ -56,13 +56,13 @@ jobs:
             echo "::notice title=Pages is not enabled::Settings -> Pages, set Source to \"GitHub Actions\". The next push touching docs/ will deploy, or re-run this workflow."
           fi
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         if: steps.pages.outputs.on == 'true'
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         if: steps.pages.outputs.on == 'true'
         with:
           path: docs
 
       - id: deployment
         if: steps.pages.outputs.on == 'true'
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
